@@ -114,6 +114,78 @@ def clean_text(value: Any) -> str:
 
     return re.sub(r"\s+", " ", str(value)).strip()
 
+URL_PATTERN = re.compile(r'https?://[^\s<>"\']+')
+
+
+def extract_text_urls(text: str) -> list[str]:
+    """Extract unique URLs from text."""
+    urls = []
+    seen = set()
+
+    for match in URL_PATTERN.findall(text or ""):
+        url = match.rstrip(".,;:!?)]}\"'")
+
+        if url and url not in seen:
+            seen.add(url)
+            urls.append(url)
+
+    return urls
+
+
+def links_from_results(
+    results: list[dict[str, Any]],
+) -> list[str]:
+    """Collect source URLs from retrieved results."""
+    links = []
+    seen = set()
+
+    for result in results:
+        candidates = []
+
+        source_url = clean_text(
+            result.get("url", "")
+        )
+
+        if source_url:
+            candidates.append(source_url)
+
+        candidates.extend(
+            extract_text_urls(
+                result.get("text", "")
+            )
+        )
+
+        for url in candidates:
+            if url not in seen:
+                seen.add(url)
+                links.append(url)
+
+    return links
+
+
+def display_relevant_links(
+    results: list[dict[str, Any]],
+) -> None:
+    """Display clickable links below the answer."""
+    links = links_from_results(results)
+
+    if not links:
+        return
+
+    st.markdown("**Relevant links**")
+
+    for number, url in enumerate(links, start=1):
+        domain = urlparse(url).netloc
+
+        label = (
+            f"{domain} — Link {number}"
+            if domain
+            else f"Open link {number}"
+        )
+
+        st.markdown(f"- [{label}]({url})")
+
+
 
 def split_text(text: str) -> list[str]:
     """Split long text into overlapping searchable sections."""
@@ -1051,24 +1123,37 @@ def read_configuration():
 def format_reference_context(
     results: list[dict[str, Any]],
 ) -> str:
-    """Prepare retrieved passages for Ollama."""
-
+    """Send retrieved information and URLs to Ollama."""
     blocks = []
 
     for result in results:
-
         label = (
             f"{result['source']}, "
             f"{result['location']}"
         )
 
+        result_links = links_from_results(
+            [result]
+        )
+
+        link_section = ""
+
+        if result_links:
+            link_section = (
+                "\n\nREFERENCE LINKS:\n"
+                + "\n".join(
+                    f"- {url}"
+                    for url in result_links
+                )
+            )
+
         blocks.append(
             f"[SOURCE: {label}]\n"
             f"{result['text']}"
+            f"{link_section}"
         )
 
     return "\n\n".join(blocks)
-
 
 def ask_ollama(
     question: str,
