@@ -33,7 +33,7 @@ URLS_FILE = KNOWLEDGE_DIR / "urls.txt"
 
 OLLAMA_API_URL = "https://ollama.com/api/chat"
 DEFAULT_MODEL = "gpt-oss:120b"
-APP_VERSION = "3.4.0-CONVERSATIONAL-RAG"
+APP_VERSION = "3.5.0-CONTEXT-AWARE-RAG"
 
 REQUEST_TIMEOUT_SECONDS = 300
 URL_TIMEOUT_SECONDS = 30
@@ -84,6 +84,136 @@ STOP_WORDS = {
     "provide", "tell",
 }
 
+# Map the different expressions users commonly use for the same Library
+# service.  These terms are added only to the BM25 retrieval query; they are
+# not added to the user's visible question and are not treated as facts.
+CONTEXT_SYNONYMS = {
+    "library hours": [
+        "opening hours",
+        "open hours",
+        "opening time",
+        "closing time",
+        "working hours",
+        "library timings",
+        "library timing",
+        "operating hours",
+        "service hours",
+        "when open",
+        "when close",
+    ],
+    "remote access": [
+        "off campus access",
+        "off-campus access",
+        "access from home",
+        "outside campus",
+        "remote login",
+        "myloft",
+    ],
+    "borrowing": [
+        "borrow books",
+        "book issue",
+        "issue books",
+        "checkout books",
+        "check out books",
+        "loan books",
+    ],
+    "return books": [
+        "book return",
+        "return book",
+        "give back books",
+    ],
+    "renewal": [
+        "renew book",
+        "extend due date",
+        "book extension",
+        "extend borrowing",
+    ],
+    "reservation": [
+        "reserve book",
+        "book reservation",
+        "hold book",
+        "place hold",
+    ],
+    "overdue": [
+        "late book",
+        "late return",
+        "fine",
+        "overdue fine",
+        "penalty",
+    ],
+    "electronic resources": [
+        "e resources",
+        "e-resources",
+        "databases",
+        "online resources",
+        "digital resources",
+        "e journals",
+        "ejournals",
+        "e books",
+        "ebooks",
+    ],
+    "newspapers": [
+        "newspaper",
+        "daily newspaper",
+        "news papers",
+    ],
+    "membership": [
+        "library member",
+        "library membership",
+        "who can use library",
+        "eligible users",
+        "external member",
+    ],
+    "contact": [
+        "contact details",
+        "phone number",
+        "telephone number",
+        "email address",
+        "whom to contact",
+    ],
+}
+
+# Regular expressions catch natural questions that do not contain an exact
+# synonym, for example: "When do you close today?"
+LIBRARY_INTENT_PATTERNS = {
+    "library hours": [
+        r"\bwhat\s+time\b.*\b(open|close|closing)\b",
+        r"\bwhen\b.*\b(open|close|closing)\b",
+        r"\b(open|close|closing)\b.*\b(today|tomorrow|weekday|weekend)\b",
+        r"\b(saturday|sunday|weekday|weekend)\b.*\b(hour|hours|time|timing|timings|open|close)\b",
+        r"\b(hour|hours|time|timing|timings|open|close)\b.*\b(saturday|sunday|weekday|weekend)\b",
+    ],
+    "remote access": [
+        r"\baccess\b.*\b(home|outside|remote|off[ -]?campus)\b",
+        r"\b(home|outside|remote|off[ -]?campus)\b.*\baccess\b",
+    ],
+    "borrowing": [
+        r"\bhow\b.*\b(borrow|issue|checkout|check out)\b",
+        r"\b(borrow|issue|checkout|check out)\b.*\b(book|books)\b",
+    ],
+    "return books": [
+        r"\b(return|give back)\b.*\b(book|books)\b",
+    ],
+    "renewal": [
+        r"\b(renew|extend)\b.*\b(book|books|loan|due date)\b",
+    ],
+    "reservation": [
+        r"\b(reserve|reservation|hold)\b.*\b(book|books|title)\b",
+    ],
+    "overdue": [
+        r"\b(late|overdue|fine|penalty)\b.*\b(book|books|return|fee)\b",
+    ],
+    "electronic resources": [
+        r"\b(database|databases|e-?resource|e-?journal|e-?book)\b",
+    ],
+    "membership": [
+        r"\b(who|how)\b.*\b(join|member|membership|use the library)\b",
+    ],
+    "contact": [
+        r"\b(contact|phone|telephone|email)\b.*\b(library|librarian|desk|help)\b",
+    ],
+}
+
 NOT_FOUND_RESPONSE = (
     "The requested information could not be found in the "
     "available LibAI knowledge base."
@@ -132,6 +262,13 @@ Rules:
 13. Omit the relevant_links block when no directly useful URL is present.
 14. For a follow-up question, answer the follow-up itself rather than repeating
     the entire previous answer unless repetition is necessary for clarity.
+15. Understand common Library terminology as equivalent where appropriate.
+    For example, timings/opening hours/working hours may refer to Library
+    hours; off-campus/remote/access from home may refer to remote access;
+    issue/checkout/borrow may refer to borrowing; and hold/reserve may refer
+    to reservation.
+16. These terminology equivalences help identify the user's intent only. All
+    factual details must still come exclusively from REFERENCE CONTEXT.
 """.strip()
 
 
@@ -1040,6 +1177,45 @@ def build_knowledge_index() -> tuple[BM25Index, list[str], int]:
 # -----------------------------------------------------------------------------
 
 
+def detect_library_intents(question: str) -> list[str]:
+    """Return canonical Library intents detected in a natural-language query."""
+    lowered = clean_text(question).lower()
+    detected: list[str] = []
+
+    for canonical_term, synonyms in CONTEXT_SYNONYMS.items():
+        exact_terms = [canonical_term, *synonyms]
+        phrase_match = any(term in lowered for term in exact_terms)
+        pattern_match = any(
+            re.search(pattern, lowered)
+            for pattern in LIBRARY_INTENT_PATTERNS.get(canonical_term, [])
+        )
+
+        if phrase_match or pattern_match:
+            detected.append(canonical_term)
+
+    return detected
+
+
+def expand_query_context(question: str) -> str:
+    """Add equivalent Library terminology to a query before BM25 search."""
+    original = clean_text(question)
+    if not original:
+        return ""
+
+    expansion: list[str] = []
+
+    for intent in detect_library_intents(original):
+        expansion.append(intent)
+        expansion.extend(CONTEXT_SYNONYMS[intent])
+
+    if not expansion:
+        return original
+
+    # dict.fromkeys keeps the configured order while removing duplicates.
+    unique_terms = list(dict.fromkeys(expansion))
+    return f"{original} {' '.join(unique_terms)}".strip()
+
+
 def knowledge_supports_question(
     query: str,
     results: list[dict[str, Any]],
@@ -1144,12 +1320,15 @@ def build_contextual_query(
     current_question: str,
     prior_questions: list[str],
 ) -> str:
-    """Combine recent topic wording with the current follow-up question."""
+    """Combine the previous topic with expanded current Library terminology."""
+    expanded_current = expand_query_context(current_question)
+
     if not prior_questions:
-        return current_question
+        return expanded_current
 
     # The newest prior user turn usually contains the active topic.
-    return f"{prior_questions[-1]} {current_question}".strip()
+    expanded_previous = expand_query_context(prior_questions[-1])
+    return f"{expanded_previous} {expanded_current}".strip()
 
 
 def retrieve_for_question(
@@ -1160,6 +1339,7 @@ def retrieve_for_question(
     """Retrieve direct results, then retry contextually when appropriate."""
     prior_questions = previous_user_questions(prior_messages)
     follow_up = bool(prior_questions) and needs_previous_question(question)
+    expanded_question = expand_query_context(question)
 
     if follow_up:
         retrieval_query = build_contextual_query(question, prior_questions)
@@ -1168,7 +1348,7 @@ def retrieve_for_question(
             return retrieval_query, results
 
     # Try the current question independently first for non-obvious follow-ups.
-    direct_query = question
+    direct_query = expanded_question
     direct_results = knowledge_index.search(direct_query)
 
     if knowledge_supports_question(direct_query, direct_results):
