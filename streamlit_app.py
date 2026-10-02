@@ -1633,7 +1633,7 @@ if question and question.strip():
     conversation_history = recent_conversation_history(prior_messages)
 
     with st.chat_message("assistant"):
-        st.markdown("**AI**")
+        st.markdown("**AI Assistant**")
 
         if not results:
             answer = NOT_FOUND_RESPONSE
