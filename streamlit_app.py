@@ -1515,9 +1515,8 @@ def reset_conversation() -> None:
     st.session_state.messages = []
 
 
-st.title("📚 LibAI")
-st.caption("AI-powered IIMB Library Reference Assistant")
-st.caption("🔒 Answer mode: Knowledge base only")
+st.title("📚 AI Assistant")
+st.caption("Hi! 👋 Welcome to IIMB Library. I’m here to help you with library resources and services. How can I assist you today?.")
 
 api_key, model = read_configuration()
 
