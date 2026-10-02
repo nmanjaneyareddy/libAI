@@ -1592,6 +1592,7 @@ if question and question.strip():
     # Capture prior conversation BEFORE adding the current user message.
     prior_messages = list(st.session_state.messages)
 
+# Display previous chat messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         if message["role"] == "user":
@@ -1603,6 +1604,20 @@ for message in st.session_state.messages:
 
         if message.get("links"):
             display_link_items(message["links"])
+
+
+# Handle new user question
+if question and question.strip():
+    clean_question = question.strip()
+
+    # Capture prior conversation BEFORE adding the current user message
+    prior_messages = list(st.session_state.messages)
+
+    st.session_state.messages.append(
+        {
+            "role": "user",
+            "content": clean_question,
+        }
     )
 
     with st.chat_message("user"):
@@ -1618,6 +1633,8 @@ for message in st.session_state.messages:
     conversation_history = recent_conversation_history(prior_messages)
 
     with st.chat_message("assistant"):
+        st.markdown("**AI**")
+
         if not results:
             answer = NOT_FOUND_RESPONSE
             st.warning(answer)
@@ -1628,7 +1645,8 @@ for message in st.session_state.messages:
                     "content": answer,
                     "links": [],
                 }
-            )
+            )        
+        
         else:
             context = format_reference_context(results)
 
