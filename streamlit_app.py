@@ -1526,15 +1526,10 @@ with col1:
 with col2:
     st.title("AI Assistant")
 
-st.caption("AI-powered IIMB Library Reference Assistant")
-
-st.markdown(
-    """
-    Hi! Welcome to IIMB Library. If you need any help with library resources or services, ask me here.
-    """
+st.caption(
+    "Hi! 👋 Welcome to IIMB Library. I’m here to help you with library resources and services. "
+    "How can I assist you today?"
 )
-
-st.caption("Hi! 👋 Welcome to IIMB Library. I’m here to help you with library resources and services. How can I assist you today?.")
 
 api_key, model = read_configuration()
 
