@@ -1527,8 +1527,8 @@ with col2:
     st.title("LibAI Assistant")
 
 st.caption(
-    "Hi! 👋 Welcome to IIMB Library. I’m here to help you with library resources and services. "
-    "How can I assist you today?"
+    "Hi! 👋 Welcome to IIMB Library. I’m here to help you with library resources and services. How can I assist you today?"
+    
 )
 
 api_key, model = read_configuration()
