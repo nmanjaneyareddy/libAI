@@ -1581,7 +1581,7 @@ for message in st.session_state.messages:
 
 
 question = st.chat_input(
-    "Ask LibAI about Library resources, services, or policies...",
+    "Enter your query here...",
     disabled=not bool(knowledge_index.chunks),
 )
 
@@ -1592,14 +1592,21 @@ if question and question.strip():
     # Capture prior conversation BEFORE adding the current user message.
     prior_messages = list(st.session_state.messages)
 
-    st.session_state.messages.append(
-        {
-            "role": "user",
-            "content": clean_question,
-        }
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        if message["role"] == "user":
+            st.markdown("**You**")
+        else:
+            st.markdown("**AI**")
+
+        st.markdown(message["content"])
+
+        if message.get("links"):
+            display_link_items(message["links"])
     )
 
     with st.chat_message("user"):
+        st.markdown("**You**")
         st.markdown(clean_question)
 
     retrieval_query, results = retrieve_for_question(
