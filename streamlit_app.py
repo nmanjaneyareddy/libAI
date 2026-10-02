@@ -1521,10 +1521,10 @@ def reset_conversation() -> None:
 col1, col2 = st.columns([0.05, 0.95], vertical_alignment="center")
 
 with col1:
-    st.image("assets/chatbot-icon.svg", width=24)
+    st.image("assets/chatbot-icon.svg", width=48)
 
 with col2:
-    st.title("AI Assistant")
+    st.title("LibAI Assistant")
 
 st.caption(
     "Hi! 👋 Welcome to IIMB Library. I’m here to help you with library resources and services. "
