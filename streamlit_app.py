@@ -1514,15 +1514,12 @@ def reset_conversation() -> None:
     """Clear conversation state."""
     st.session_state.messages = []
 
-st.markdown(
-    """
-    <div style="display:flex; align-items:center; gap:8px;">
-        <img src="assets/chatbot-icon.svg" width="24">
-        <span style="font-size:32px; font-weight:700;">LibAI</span>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+col1, col2 = st.columns([0.04, 0.96], vertical_alignment="center")
+
+with col1:
+    st.image("assets/chatbot-icon.svg", width=24)
+
+with col2:
 st.title("AI Assistant")
 st.caption("Hi! 👋 Welcome to IIMB Library. I’m here to help you with library resources and services. How can I assist you today?.")
 
