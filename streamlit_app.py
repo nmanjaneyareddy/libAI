@@ -1515,7 +1515,59 @@ def reset_conversation() -> None:
     st.session_state.messages = []
 
 
-st.title("📚 AI Assistant")
+
+st.markdown("""
+<div style="display:flex; align-items:center; gap:10px;">
+    <svg xmlns="http://www.w3.org/2000/svg"
+         width="38"
+         height="30"
+         viewBox="0 0 34 26">
+
+      <style>
+        .chatbot {
+          animation: pulse 1.8s ease-in-out infinite;
+          transform-origin: center;
+        }
+
+        @keyframes pulse {
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.08); }
+        }
+      </style>
+
+      <g class="chatbot">
+        <ellipse cx="17" cy="13" rx="15" ry="11" fill="#d32f2f"/>
+
+        <rect x="9" y="7" width="16" height="12" rx="4"
+              fill="none" stroke="white" stroke-width="1.5"/>
+
+        <line x1="17" y1="7" x2="17" y2="4"
+              stroke="white" stroke-width="1.5"/>
+
+        <circle cx="17" cy="3.5" r="1" fill="white"/>
+
+        <circle cx="13" cy="12" r="1.2" fill="white"/>
+        <circle cx="21" cy="12" r="1.2" fill="white"/>
+
+        <path d="M13 15.5 Q17 18 21 15.5"
+              fill="none"
+              stroke="white"
+              stroke-width="1.3"
+              stroke-linecap="round"/>
+      </g>
+    </svg>
+
+    <span style="
+        font-size:32px;
+        font-weight:700;
+        line-height:1;
+    ">
+        LibAI
+    </span>
+</div>
+""", unsafe_allow_html=True)
+
+st.title("AI Assistant")
 st.caption("Hi! 👋 Welcome to IIMB Library. I’m here to help you with library resources and services. How can I assist you today?.")
 
 api_key, model = read_configuration()
