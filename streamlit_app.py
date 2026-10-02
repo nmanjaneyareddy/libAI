@@ -1517,13 +1517,20 @@ def reset_conversation() -> None:
 # HEADER / TITLE SECTION
 # ---------------------------------------------------------
 
-col1, col2 = st.columns([0.05, 0.95], vertical_alignment="center")
+col1, col2 = st.columns([0.08, 0.92], vertical_alignment="center")
 
 with col1:
-    st.image("assets/iimb-logo.svg", width=48)
+    st.image("assets/chatbot-icon.svg", width=48)
 
 with col2:
-    st.title("LibAI Assistant")
+    st.markdown(
+        """
+        <div style="font-size:24px; font-weight:700;">
+            LibAI Assistant
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 st.caption(
     "Hi! 👋 Welcome to IIMB Library. I’m here to help you with library resources and services. How can I assist you today?"
