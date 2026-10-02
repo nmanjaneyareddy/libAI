@@ -273,9 +273,9 @@ Rules:
 
 
 st.set_page_config(
-    page_title="LibAI",
-    page_icon="📚",
-    layout="centered",
+    page_title="IIMB Library AI Assistant",
+    page_icon="assets/iimb-logo.svg",
+    layout="centered"
 )
 
 # -----------------------------------------------------------------------------
