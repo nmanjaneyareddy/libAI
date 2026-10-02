@@ -278,6 +278,31 @@ st.set_page_config(
     layout="centered",
 )
 
+st.markdown(
+    """
+    <style>
+        footer {
+            visibility: hidden !important;
+            display: none !important;
+        }
+
+        [data-testid="stFooter"] {
+            visibility: hidden !important;
+            display: none !important;
+        }
+
+        [data-testid="stToolbar"] {
+            visibility: hidden !important;
+            height: 0 !important;
+        }
+
+        #MainMenu {
+            visibility: hidden !important;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 # -----------------------------------------------------------------------------
 # Text and link helpers
