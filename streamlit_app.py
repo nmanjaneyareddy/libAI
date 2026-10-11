@@ -688,7 +688,7 @@ def read_seeds() -> list[str]:
     return links
 
 
-@st.cache_resource(show_spinner=False, ttl=21600)
+@st.cache_resource(show_spinner=False, ttl=86400)
 def build_index() -> tuple[BM25Index, list[str], int]:
     KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
     chunks, failures, source_names = [], [], set()
