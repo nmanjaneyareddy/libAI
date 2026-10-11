@@ -84,7 +84,7 @@ VERIFIED_RECORDS = [
             "Phone: +91-80-26993558\n"
             "Important: 'Librarian (In-Charge)' is the actual designation; do "
             "not describe this as a permanent Librarian appointment.\n"
-            "Official source: https://library.iimb.ac.in/FRAL"
+
         ),
     },
     {
@@ -1229,7 +1229,7 @@ for item in st.session_state.messages:
         if item.get("links"):
             show_links(item["links"])
 
-question = st.chat_input("Enter your Library question...", disabled=not bool(index.chunks))
+question = st.chat_input("Ask your question here...", disabled=not bool(index.chunks))
 if question and question.strip():
     question = question.strip()
     previous = list(st.session_state.messages)
