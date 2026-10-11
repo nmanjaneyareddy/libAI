@@ -179,7 +179,7 @@ def clean(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
-def normalize_lines(text: str) -> str:
+def normalize_lines(text: str) -> str:l
     """Preserve row/paragraph boundaries (especially times and spreadsheet data)."""
     lines = [clean(line) for line in text.splitlines()]
     return "\n".join(line for line in lines if line)
@@ -1168,7 +1168,7 @@ with left:
     else:
         st.markdown("📚")
 with right:
-    st.title("LibAI Assistant")
+    st.title("Library AI Assistant")
 st.caption("Hi! 👋 Welcome to IIMB Library. I’m here to help you with library resources and services. How can I assist you today?")
 
 if "messages" not in st.session_state:
