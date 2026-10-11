@@ -1278,7 +1278,7 @@ if question and question.strip():
                     answer = "\n\n".join(part for part in (leadership, hours) if part)
                     if not answer:
                         answer = call_ollama(question, context, previous)
-                    links = response_links(retrieval_question, results)
+                    links = response_links(retrieval_question, results, answer)
                     st.markdown(answer)
                     show_links(links)
                 except RuntimeError as exc:
