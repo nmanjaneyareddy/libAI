@@ -179,7 +179,7 @@ def clean(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
-def normalize_lines(text: str) -> str:l
+def normalize_lines(text: str) -> str:
     """Preserve row/paragraph boundaries (especially times and spreadsheet data)."""
     lines = [clean(line) for line in text.splitlines()]
     return "\n".join(line for line in lines if line)
