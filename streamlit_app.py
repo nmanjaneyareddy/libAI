@@ -9,14 +9,17 @@ from __future__ import annotations
 import csv
 import io
 import ipaddress
+import time
+import xml.etree.ElementTree as ET
 import math
 import re
 import socket
 from collections import Counter, deque
+from functools import lru_cache
 from html import unescape
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from urllib.parse import urldefrag, urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, urldefrag, urljoin, urlparse
 
 import requests
 import streamlit as st
@@ -31,11 +34,12 @@ KNOWLEDGE_DIR = BASE_DIR / "knowledge"
 URLS_FILE = KNOWLEDGE_DIR / "urls.txt"
 OLLAMA_URL = "https://ollama.com/api/chat"
 DEFAULT_MODEL = "gpt-oss:120b"
-VERSION = "4.0.2-LEADERSHIP"
+VERSION = "4.2.0-DEEP-CRAWL"
 LIBRARY_HOME = "https://library.iimb.ac.in/"
 PRIORITY_URLS = [
-    "https://library.iimb.ac.in/pa/wh",
-
+    "https://library.iimb.ac.in/pa/wh",     # Current official Library hours
+    "https://library.iimb.ac.in/pa/lsd",    # Staff directory
+    "https://library.iimb.ac.in/pa/cs",     # Contact staff
 ]
 ALLOWED_CRAWL_HOSTS = {"library.iimb.ac.in"}
 SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".csv", ".txt", ".md"}
@@ -44,14 +48,64 @@ SKIP_EXTENSIONS = {".png", ".jpg", ".jpeg", ".svg", ".gif", ".zip", ".rar",
                    ".mp4", ".mp3", ".doc", ".docx", ".ppt", ".pptx", ".css", ".js"}
 MAX_SOURCE_BYTES = 30 * 1024 * 1024
 MAX_PDF_PAGES = 500
-MAX_CRAWL_PAGES = 55
-MAX_CRAWL_DEPTH = 2
+# Covers main website pages and linked LibGuides subpages, rather than only
+# the first two navigation levels. These are safety/performance limits, not
+# a guarantee that access-controlled or JavaScript-only pages can be indexed.
+MAX_CRAWL_PAGES = 350
+MAX_CRAWL_DEPTH = 8
+MAX_CRAWL_SECONDS = 240
+MAX_CRAWL_WORKERS = 3
+MAX_QUEUED_URLS = 6000
+MAX_SITEMAP_URLS = 2500
 TOP_K = 9
 MAX_CONTEXT_CHARS = 18000
 MAX_HISTORY = 6
 REQUEST_TIMEOUT = 180
-SOURCE_TIMEOUT = 18
+SOURCE_TIMEOUT = 12
 MAX_OFFICIAL_LINKS = 2
+
+# IMPORTANT: These two official facts are embedded INSIDE this script so a new
+# knowledge/*.md file is NOT needed. They were checked on 11 October 2026.
+# When the official website changes, update these records in streamlit_app.py.
+# Other questions continue to use the existing local files and website crawler.
+VERIFIED_RECORDS = [
+    {
+        "kind": "leadership",
+        "source": "IIM Bangalore Library – Current Librarian (In-Charge)",
+        "url": "https://library.iimb.ac.in/FRAL",
+        "priority": 10,
+        "text": (
+            "OFFICIAL VERIFIED LIBRARY LEADERSHIP (checked 11 October 2026)\n"
+            "Question: Who is the librarian at IIM Bangalore? Who heads the "
+            "Library? Who is the Library In-Charge? Who is the Deputy Librarian?\n"
+            "Current Librarian (In-Charge): Dr. Anjaneya Reddy N. M.\n"
+            "Substantive designation: Deputy Librarian\n"
+            "Email: anjaneya.reddynm@iimb.ac.in\n"
+            "Phone: +91-80-26993558\n"
+            "Important: 'Librarian (In-Charge)' is the actual designation; do "
+            "not describe this as a permanent Librarian appointment.\n"
+            "Official source: https://library.iimb.ac.in/FRAL"
+        ),
+    },
+    {
+        "kind": "opening_hours",
+        "source": "IIM Bangalore Library – Official Opening and Transaction Hours",
+        "url": "https://library.iimb.ac.in/pa/wh",
+        "priority": 10,
+        "text": (
+            "OFFICIAL VERIFIED LIBRARY HOURS (checked 11 October 2026)\n"
+            "Question: What are the IIM Bangalore Library opening hours, "
+            "closing time, working hours, Saturday or Sunday timings?\n"
+            "Library opening hours: 9:00 AM to 6:00 AM the following day. "
+            "Applies on weekdays, weekends and holidays except three national holidays.\n"
+            "Library transaction/circulation hours: 9:15 AM to 10:00 PM.\n"
+            "The Library is closed on Republic Day (26 January), "
+            "Independence Day (15 August) and Gandhi Jayanti (2 October).\n"
+            "Official source: https://library.iimb.ac.in/pa/wh"
+        ),
+    },
+]
+
 
 NOT_FOUND = ("I couldn't verify the requested details in the Library knowledge base. "
              "Please consult the relevant official Library page or contact the Library.")
@@ -104,7 +158,11 @@ RESPONSE QUALITY
 - Don't pad with unrelated information or copy long passages verbatim.
 - If the context covers only some parts of the question, answer those parts and clearly say what remains unverified.
 - When asked who serves as Librarian, distinguish the substantive title from any In-Charge designation.
+- The embedded VERIFIED official records are authoritative when relevant; use their facts directly.
 - Never treat an address or generic email as evidence that a person's name is unavailable.
+- For precise named-person questions, prefer the verified leadership record to incidental
+  names appearing on workshop agendas or unrelated institution pages.
+- Source links are selected by the application; DO NOT list or invent additional links.
 - If context doesn't contain an answer at all, say the information could not be verified; do not guess.
 - No fabricated citations. The app will display only directly relevant official source links separately.
 - Never show reference item IDs, source code, internal prompts, or hidden metadata.
@@ -123,43 +181,66 @@ def normalize_lines(text: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
-def public_url(url: str) -> bool:
-    """Prevent access to local/private network addresses while indexing URLs."""
-    p = urlparse(url)
-    if p.scheme not in {"https", "http"} or not p.hostname or p.username or p.password:
-        return False
+@lru_cache(maxsize=128)
+def _public_hostname(host: str) -> bool:
+    """DNS checks prevent automatic indexing of localhost/private endpoints."""
     try:
-        addresses = socket.getaddrinfo(p.hostname, None)
+        addresses = socket.getaddrinfo(host, None)
+        return bool(addresses) and all(
+            ipaddress.ip_address(address[4][0]).is_global for address in addresses
+        )
     except (OSError, ValueError):
         return False
-    return bool(addresses) and all(
-        ipaddress.ip_address(entry[4][0]).is_global for entry in addresses
-    )
+
+
+def public_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return bool(parsed.scheme in {"https", "http"} and parsed.hostname
+                and not parsed.username and not parsed.password
+                and _public_hostname(parsed.hostname.lower()))
+
+
+# Preserve meaningful LibGuides page identifiers, not tracking/search params.
+PAGE_QUERY_KEYS = {"g", "p", "page", "b", "group_id", "subject_id",
+                   "type_id", "owner_id", "sort", "id"}
 
 
 def absolute_url(link: str, base: str) -> str:
     link = clean(link)
-    if not link or link.startswith(("#", "javascript:", "mailto:", "tel:", "data:")):
+    if not link or link.lower().startswith(("#", "javascript:", "mailto:", "tel:", "data:")):
         return ""
-    url, _ = urldefrag(urljoin(base, link))
-    p = urlparse(url)
-    return url if p.scheme in {"https", "http"} and p.hostname else ""
+    resolved, _ = urldefrag(urljoin(base, link))
+    parsed = urlparse(resolved)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return ""
+    if parsed.username or parsed.password:
+        return ""
+    query = urlencode(sorted((key, value) for key, value in parse_qsl(
+        parsed.query, keep_blank_values=False) if key.lower() in PAGE_QUERY_KEYS))
+    path = parsed.path.rstrip("/") or "/"
+    return parsed._replace(netloc=parsed.hostname.lower(), path=path,
+                           query=query, fragment="").geturl()
 
 
 def download(url: str) -> tuple[bytes, str, str]:
-    """Follow only validated redirects; enforce a strict download size cap."""
+    """Fetch small public pages, validating redirects and limiting downloads."""
     for _ in range(5):
         if not public_url(url):
-            raise ValueError("Unsafe or unreachable source URL")
+            raise ValueError("Source is not a public HTTP(S) URL")
         with requests.get(url, timeout=SOURCE_TIMEOUT, stream=True,
                           allow_redirects=False, headers={
-                              "User-Agent": "Mozilla/5.0 (compatible; LibAI-Library-Indexer/4.0)",
-                              "Accept": "text/html,application/pdf,*/*"
+                              "User-Agent": "LibAI-Library-Indexer/4.2 (public library content)",
+                              "Accept": "text/html,application/pdf,application/xml,text/xml,*/*",
                           }) as response:
             if response.status_code in {301, 302, 303, 307, 308}:
-                url = absolute_url(response.headers.get("Location", ""), url)
-                if not url:
+                destination = absolute_url(response.headers.get("Location", ""), url)
+                if not destination:
                     raise ValueError("Invalid redirect")
+                # Keep official website crawling on its own domain.
+                if (urlparse(url).hostname in ALLOWED_CRAWL_HOSTS
+                        and urlparse(destination).hostname not in ALLOWED_CRAWL_HOSTS):
+                    raise ValueError("Off-site redirect skipped")
+                url = destination
                 continue
             response.raise_for_status()
             size = 0
@@ -167,10 +248,71 @@ def download(url: str) -> tuple[bytes, str, str]:
             for part in response.iter_content(chunk_size=65536):
                 size += len(part)
                 if size > MAX_SOURCE_BYTES:
-                    raise ValueError("Source exceeds 30 MB")
+                    raise ValueError("Source exceeds download size limit")
                 body.extend(part)
             return bytes(body), response.url, response.headers.get("Content-Type", "").lower()
     raise ValueError("Too many redirects")
+
+
+def is_crawlable(url: str, explicit_seeds: set[str]) -> bool:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"https", "http"} or not parsed.hostname:
+        return False
+    if parsed.hostname not in ALLOWED_CRAWL_HOSTS and url not in explicit_seeds:
+        return False
+    path = parsed.path.lower()
+    if any(path.endswith(ext) for ext in SKIP_EXTENSIONS):
+        return False
+    # Avoid user-specific tools, search forms, calendars, logout and crawler traps.
+    if any(segment in path for segment in (
+        "/admin", "/login", "/logout", "/user/", "/profile/",
+        "/srch.php", "/search", "/calendar/", "/event/", "/widget/",
+        "/api/", "/rss", "/feed", "/auth/")):
+        return False
+    return True
+
+
+def sitemap_pages() -> list[str]:
+    """Discover public URLs from optional LibGuides sitemap(s), if available.
+
+    A missing, blocked, or malformed sitemap is non-fatal: HTML discovery is
+    always used as well. Do not recursively follow off-site sitemap indices.
+    """
+    sitemap_candidates = deque([
+        urljoin(LIBRARY_HOME, "sitemap.xml"),
+        urljoin(LIBRARY_HOME, "sitemap_index.xml"),
+    ])
+    explored = set()
+    collected = []
+    visited_pages = set()
+    while sitemap_candidates and len(explored) < 8 and len(collected) < MAX_SITEMAP_URLS:
+        sitemap = sitemap_candidates.popleft()
+        if sitemap in explored or urlparse(sitemap).hostname not in ALLOWED_CRAWL_HOSTS:
+            continue
+        explored.add(sitemap)
+        try:
+            body, _, _ = download(sitemap)
+            root = ET.fromstring(body)
+            name = root.tag.rsplit("}", 1)[-1].lower()
+            if name not in {"urlset", "sitemapindex"}:
+                continue
+            for loc in root.iter():
+                if loc.tag.rsplit("}", 1)[-1].lower() != "loc" or not loc.text:
+                    continue
+                url = absolute_url(loc.text, LIBRARY_HOME)
+                if not url or urlparse(url).hostname not in ALLOWED_CRAWL_HOSTS:
+                    continue
+                if name == "sitemapindex":
+                    if len(sitemap_candidates) < 8:
+                        sitemap_candidates.append(url)
+                elif url not in visited_pages and is_crawlable(url, set()):
+                    visited_pages.add(url)
+                    collected.append(url)
+                    if len(collected) >= MAX_SITEMAP_URLS:
+                        break
+        except (requests.RequestException, ET.ParseError, ValueError, OSError):
+            continue
+    return collected
 
 
 def chunks_from_text(text: str, source: str, url: str = "", priority: int = 0,
@@ -277,31 +419,50 @@ def extract_csv(path: Path) -> list[dict]:
 
 
 def extract_html(payload: bytes, url: str) -> tuple[list[dict], list[str]]:
+    """Extract actual page information and all href links for subpage discovery.
+
+    This works with LibGuides tabs, nested menu pages and conventional
+    hyperlinks. Exclude shared site navigation from the *answer text*, but
+    keep its links for crawling. Content contained only in browser-executed
+    JavaScript or requiring login cannot be extracted by requests/BS4.
+    """
     soup = BeautifulSoup(payload, "html.parser")
     title = clean(soup.title.get_text(" ")) if soup.title else url
     discovered = []
-    for anchor in soup.find_all("a", href=True):
+    discovered_set = set()
+    for anchor in soup.select("a[href], link[rel='next'][href]"):
         link = absolute_url(anchor.get("href", ""), url)
-        if link and link not in discovered:
+        if link and link not in discovered_set:
+            discovered_set.add(link)
             discovered.append(link)
-    # Springshare LibGuides uses s-lg-guide-main / s-lg-box-content for factual sections.
-    root = (soup.select_one("#s-lg-guide-main") or soup.select_one("#s-lg-guide-content")
-            or soup.select_one(".s-lib-main") or soup.find("main")
-            or soup.find("article") or soup.body or soup)
-    for tag in root.select("script, style, noscript, svg, form, iframe, nav"):
-        tag.decompose()
-    # Exclude a true global footer, but not the guide's actual information boxes.
-    for tag in root.select("footer"):
+
+    # LibGuides content boxes/guide-main contain factual content, whereas the
+    # global page header often lists hundreds of unrelated database links.
+    root = (soup.select_one("#s-lg-guide-main")
+            or soup.select_one("#s-lg-guide-content")
+            or soup.select_one(".s-lib-main")
+            or soup.find("main") or soup.find("article")
+            or soup.body or soup)
+    for tag in root.select("script, style, noscript, svg, form, iframe, nav, footer"):
         tag.decompose()
     for anchor in root.find_all("a", href=True):
         link = absolute_url(anchor.get("href", ""), url)
         label = clean(anchor.get_text(" "))
         anchor.replace_with(f"{label} ({link})" if link and label else label)
     content = normalize_lines(root.get_text("\n", strip=True))
-    # Include the visible page title in each source's search context.
-    contents = f"Page title: {title}\n{content}"
+    description = soup.find("meta", attrs={"name": "description"})
+    desc = clean(description.get("content", "")) if description else ""
+    if desc and desc.lower() not in content[:500].lower():
+        content = f"{desc}\n{content}"
+    if not content or len(content) < 30:
+        return [], discovered
     priority = 4 if url.rstrip("/") in [v.rstrip("/") for v in PRIORITY_URLS] else 1
-    return chunks_from_text(contents, title, url, priority), discovered
+    chunks = chunks_from_text(content, title, url, priority)
+    # Title MUST accompany each chunk, including later subpage paragraphs:
+    # otherwise BM25 might find a menu link instead of the answer.
+    for chunk in chunks:
+        chunk["text"] = f"Page: {title}\n{chunk['text']}"
+    return chunks, discovered
 
 
 def fetch_source(url: str) -> tuple[list[dict], list[str]]:
@@ -317,25 +478,45 @@ def fetch_source(url: str) -> tuple[list[dict], list[str]]:
 
 
 def crawl_urls(seeds: list[str]) -> tuple[list[dict], list[str], set[str]]:
-    """Crawl priority sources first, then same-site links in small parallel batches."""
+    """Index main site and linked subpages with optional sitemap discovery.
+
+    Separate navigation and sitemap queues prevent a very large sitemap from
+    starving links found on actual main pages, and vice versa. All pages are
+    public, same-host and subject to explicit time/page/depth limits.
+    """
     items, failures, sources = [], [], set()
-    queue = deque((seed, 0) for seed in seeds)
-    queued = set(seeds)
+    seeds = list(dict.fromkeys(absolute_url(seed, LIBRARY_HOME) for seed in seeds))
+    seeds = [seed for seed in seeds if seed]
+    explicit_seeds = set(seeds)
+    queue = deque((seed, 0) for seed in seeds if is_crawlable(seed, explicit_seeds))
+    sitemap_queue = deque((url, 1) for url in sitemap_pages()
+                          if is_crawlable(url, explicit_seeds))
+    queued = {url for url, _ in queue}
     seen = set()
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        while queue and len(seen) < MAX_CRAWL_PAGES:
+    elapsed_deadline = time.monotonic() + MAX_CRAWL_SECONDS
+    rate_limited = 0
+    inspected = 0
+    with ThreadPoolExecutor(max_workers=MAX_CRAWL_WORKERS) as pool:
+        while ((queue or sitemap_queue) and len(seen) < MAX_CRAWL_PAGES
+               and time.monotonic() < elapsed_deadline):
             batch = []
-            while queue and len(batch) < 3 and len(seen) < MAX_CRAWL_PAGES:
-                url, depth = queue.popleft()
-                if url in seen:
-                    continue
-                p = urlparse(url)
-                if p.hostname not in ALLOWED_CRAWL_HOSTS and url not in seeds:
-                    continue
-                if any(p.path.lower().endswith(ext) for ext in SKIP_EXTENSIONS):
+            while len(batch) < MAX_CRAWL_WORKERS and len(seen) < MAX_CRAWL_PAGES:
+                # Use one sitemap URL per 4 visits to cover unlinked guides,
+                # without skipping primary-site navigation/subpages.
+                use_sitemap = bool(sitemap_queue and (inspected % 4 == 3 or not queue))
+                target = sitemap_queue if use_sitemap else queue
+                if not target:
+                    target = sitemap_queue if sitemap_queue else queue
+                if not target:
+                    break
+                url, depth = target.popleft()
+                inspected += 1
+                if url in seen or not is_crawlable(url, explicit_seeds):
                     continue
                 seen.add(url)
                 batch.append((url, depth))
+            if not batch:
+                break
             futures = {pool.submit(fetch_source, url): (url, depth) for url, depth in batch}
             for future in as_completed(futures):
                 url, depth = futures[future]
@@ -345,22 +526,34 @@ def crawl_urls(seeds: list[str]) -> tuple[list[dict], list[str], set[str]]:
                         items.extend(chunks)
                         sources.add(url)
                     else:
-                        failures.append(f"No readable text at {url}")
+                        failures.append(f"No readable public content: {url}")
                     if depth >= MAX_CRAWL_DEPTH:
                         continue
+                    # Crawl all linked tab/child pages, not only main guides.
                     for link in links:
-                        lp = urlparse(link)
-                        if lp.hostname != "library.iimb.ac.in":
-                            continue
-                        if any(lp.path.lower().endswith(ext) for ext in SKIP_EXTENSIONS):
-                            continue
-                        if "/search" in lp.path.lower() or "srch.php" in lp.path.lower():
-                            continue
-                        if link not in seen and link not in queued:
+                        if (link not in seen and link not in queued
+                                and is_crawlable(link, explicit_seeds)
+                                and len(queued) < MAX_QUEUED_URLS):
                             queue.append((link, depth + 1))
                             queued.add(link)
                 except Exception as exc:
-                    failures.append(f"{url}: {type(exc).__name__}: {clean(exc)}")
+                    message = clean(exc)
+                    failures.append(f"{url}: {type(exc).__name__}: {message}")
+                    if "429" in message:
+                        rate_limited += 1
+            if rate_limited >= 6:
+                failures.append("Crawl stopped after repeated HTTP 429 rate limits; "
+                                "some pages were not indexed. Retry later.")
+                break
+            # Pause between batches to reduce pressure on the Library website.
+            time.sleep(0.20)
+    if queue or sitemap_queue:
+        if len(seen) >= MAX_CRAWL_PAGES:
+            failures.append(f"Crawl reached the {MAX_CRAWL_PAGES}-page safety limit. "
+                            "Some additional subpages may not be indexed.")
+        elif time.monotonic() >= elapsed_deadline:
+            failures.append(f"Crawl reached its {MAX_CRAWL_SECONDS}-second time limit. "
+                            "Some additional subpages may not be indexed.")
     return items, failures, sources
 
 
@@ -392,7 +585,11 @@ def detect_intents(question: str) -> list[str]:
     identity_words = bool(re.search(r"\b(librarian|deputy librarian|chief librarian)\b", lower))
     name_question = bool(re.search(r"\b(who|whose|name|current|present|in[- ]?charge|head|lead|serving)\b", lower))
     library_head_question = bool(re.search(r"\b(who|name|current|present)\b.*\b(head|in[- ]?charge)\b.*\blibrary\b", lower))
-    if ((identity_words and (name_question or lower in {"librarian", "the librarian"}))
+    identity_contact_question = bool(identity_words and re.search(
+        r"\b(contact|mail|email|e-mail|phone|telephone|number|reach|details)\b", lower
+    ))
+    if ((identity_words and (name_question or identity_contact_question
+                             or lower in {"librarian", "the librarian"}))
             or library_head_question):
         if "librarian identity" not in found:
             found.append("librarian identity")
@@ -445,6 +642,12 @@ class BM25Index:
             # Official/local FAQs beat generic navigation pages when both match.
             priority = int(item.get("priority", 0))
             score *= (1 + min(priority, 4) * 0.18)
+            # Confirmed official facts outrank incidental navigation mentions only
+            # when the question is actually about that service/person.
+            if item.get("kind") == "leadership" and "librarian identity" in detect_intents(question):
+                score += 18
+            elif item.get("kind") == "opening_hours" and "opening hours" in detect_intents(question):
+                score += 18
             title_tokens = set(tokenize(item.get("source", "")))
             score += len(title_tokens.intersection(terms)) * 0.25
             ranked.append((score, i))
@@ -465,7 +668,15 @@ class BM25Index:
 
 
 def read_seeds() -> list[str]:
-    links = list(PRIORITY_URLS)
+    # Main website and guide directory are always crawled automatically.
+    # Additional URLs in the existing knowledge/urls.txt are optional.
+    links = list(dict.fromkeys(PRIORITY_URLS + [
+        LIBRARY_HOME,
+        urljoin(LIBRARY_HOME, "guides"),
+        urljoin(LIBRARY_HOME, "daz"),
+        urljoin(LIBRARY_HOME, "emd"),
+        urljoin(LIBRARY_HOME, "pa/au"),
+    ]))
     if URLS_FILE.exists():
         for line in URLS_FILE.read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
@@ -476,10 +687,18 @@ def read_seeds() -> list[str]:
     return links
 
 
-@st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner=False, ttl=21600)
 def build_index() -> tuple[BM25Index, list[str], int]:
     KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
     chunks, failures, source_names = [], [], set()
+    # Verified source-backed answers, independent of crawler/extra knowledge files.
+    for record in VERIFIED_RECORDS:
+        parts = chunks_from_text(record["text"], record["source"],
+                                 record["url"], priority=record["priority"])
+        for part in parts:
+            part["kind"] = record["kind"]
+        chunks.extend(parts)
+        source_names.add(record["url"])
     for path in sorted(KNOWLEDGE_DIR.rglob("*")):
         if not path.is_file() or path == URLS_FILE or path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             continue
@@ -516,17 +735,29 @@ def build_index() -> tuple[BM25Index, list[str], int]:
 
 
 def prior_topic(messages: list[dict], question: str) -> str:
-    """Inherit prior subject only for genuine short follow-up questions."""
+    """Resolve real follow-ups without contaminating unrelated short questions.
+
+    Previously every query with <=3 meaningful words inherited the preceding
+    topic. Consequently 'Who is the librarian?' inherited e.g. opening hours.
+    A new, self-contained question must search on its own.
+    """
     if not messages:
         return ""
-    q = question.lower().strip()
-    looks_followup = (len(tokenize(q)) <= 3 or bool(re.search(
-        r"\b(it|its|that|this|those|same|them)\b|^(and|also|what about|how about)", q)))
-    if not looks_followup:
+    q = question.strip().lower()
+    explicit_reference = bool(re.search(
+        r"\b(it|its|that|this|those|them|they|their|his|her|he|she|same)\b",
+        q,
+    ))
+    elliptical_followup = bool(re.match(
+        r"^(and |also |what about |how about |more details|tell me more|"
+        r"what else|what is the (email|phone)|email\??$|phone\??$)", q,
+    ))
+    if not explicit_reference and not elliptical_followup:
         return ""
-    for msg in reversed(messages):
-        if msg["role"] == "user":
-            return msg["content"]
+    # The previous USER utterance is preferred over any assistant-generated text.
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            return str(message.get("content", ""))
     return ""
 
 
@@ -608,6 +839,11 @@ def call_ollama(question: str, context: str, history: list[dict]) -> str:
     answer = re.sub(r"<think>.*?</think>", "", str(answer), flags=re.DOTALL).strip()
     answer = re.sub(r"<relevant_links>.*?</relevant_links>", "", answer,
                     flags=re.IGNORECASE | re.DOTALL).strip()
+    # Avoid duplicate/unverified links in model prose. Official URLs are
+    # selected and rendered exclusively by response_links() below.
+    answer = re.sub(r"\[([^\]]+)\]\(https?://[^)]+\)", r"\1", answer)
+    answer = re.sub(r"https?://[^\s<>)]+", "", answer)
+    answer = re.sub(r"[ \t]+", " ", answer).strip()
     if not answer:
         raise RuntimeError("Ollama returned an empty answer.")
     return answer
@@ -615,80 +851,90 @@ def call_ollama(question: str, context: str, history: list[dict]) -> str:
 
 
 def verified_librarian_answer(question: str, results: list[dict]) -> str:
-    """Use a maintained, source-verified staff entry for CURRENT identity questions.
+    """Answer current IIMB librarian questions from verified embedded context.
 
-    Avoid an LLM's 'not listed' answer when an authoritative, local record
-    has already been retrieved. Never hard-code the person's name in Python.
-    The exact facts and source link live in knowledge/library_staff.md.
-    Historical or outside-institution queries use normal retrieval instead.
+    Avoid retrieving a different institution's librarian appearing on an IIMB
+    event page. Do not depend on knowledge/library_staff.md existing.
     """
     if "librarian identity" not in detect_intents(question):
         return ""
     lower = question.lower()
-    if re.search(r"\b(former|previous|predecessor|historical|history|past|last year|20[0-2][0-9])\b", lower):
+    # Don't answer a question about a distinct UG/Jigani library manager
+    # with the main IIMB Library In-Charge's name.
+    if re.search(r"\b(ug campus|jigani|undergraduate campus)\b", lower):
+        return ""
+    if re.search(r"\b(former|previous|predecessor|historical|past|last year|20[0-2][0-9])\b", lower):
         return ""
     if re.search(r"\biim\s+(?!bangalore\b|bengaluru\b)(?:kozhikode|calcutta|ahmedabad|lucknow|indore|ranchi|udaipur|visakhapatnam)\b", lower):
         return ""
-    for item in results:
-        if not str(item.get("source", "")).endswith("library_staff.md"):
-            continue
-        content = str(item.get("text", ""))
-        def field(label: str) -> str:
-            hit = re.search(r"(?im)^" + re.escape(label) + r":\s*(.+)$", content)
-            return clean(hit.group(1)) if hit else ""
-        name = field("Current Librarian (In-Charge)")
-        substantive = field("Substantive position")
-        email = field("Official email")
-        telephone = field("Official telephone")
-        if not name:
-            continue
-        answer = f"**{name}** is currently serving as **Librarian (In-Charge)** of the IIM Bangalore Library."
-        if substantive:
-            answer += f" The substantive position is **{substantive}**."
-        contacts = []
+    # Explicitly named other universities are not the IIMB librarian question.
+    if re.search(r"\b(?:iimk|iima|iimc|iiml|iimr|iimu)\b", lower):
+        return ""
+    verified = next((item for item in results if item.get("kind") == "leadership"), None)
+    if not verified:
+        return ""
+    content = str(verified["text"])
+    def field(label: str) -> str:
+        hit = re.search(r"(?im)^" + re.escape(label) + r":\s*(.+)$", content)
+        return clean(hit.group(1)) if hit else ""
+    name = field("Current Librarian (In-Charge)")
+    title = field("Substantive designation")
+    if not name:
+        return ""
+    answer = (f"**{name}** is serving as the **Librarian (In-Charge)** of "
+              f"the IIM Bangalore Library.")
+    if title:
+        answer += f" The substantive designation is **{title}**."
+    # Contact details only when asked, avoiding irrelevant clutter.
+    if re.search(r"\b(email|e-mail|mail|contact|phone|telephone|number|reach)\b", lower):
+        email = field("Email")
+        phone = field("Phone")
+        details = []
         if email:
-            contacts.append(f"Email: {email}")
-        if telephone:
-            contacts.append(f"Phone: {telephone}")
-        if contacts:
-            answer += "\n\n**Contact details:**\n" + "\n".join("- " + line for line in contacts)
-        return answer
-    return ""
-
-
-def verified_hours_fallback(question: str, results: list[dict], answer: str) -> str:
-    """If a model ignores retrieved timings, use literal verified FAQ facts.
-
-    This is a quality fallback, not a guessed answer or a hard-coded schedule.
-    The facts live in knowledge/library_faq.md and can be updated by librarians.
-    """
-    if "opening hours" not in detect_intents(question):
-        return answer
-    # If the generated response already gives actual times, preserve it.
-    if re.search(r"\b\d{1,2}:\d{2}\s*(?:AM|PM)\b", answer, re.I):
-        return answer
-    for item in results:
-        if not item.get("source", "").endswith("library_faq.md"):
-            continue
-        lines = [clean(line) for line in item["text"].splitlines()]
-        facts = []
-        for line in lines:
-            low = line.lower()
-            if ("library is open from" in low or "library transaction hours" in low
-                    or "library is closed on" in low):
-                facts.append(line)
-        if facts and any(re.search(r"\d{1,2}:\d{2}\s*(?:AM|PM)", x, re.I) for x in facts):
-            return "\n\n".join(facts)
+            details.append(f"- Email: {email}")
+        if phone:
+            details.append(f"- Phone: {phone}")
+        if details:
+            answer += "\n\n**Contact details**\n" + "\n".join(details)
     return answer
 
+
+def verified_hours_answer(question: str, results: list[dict]) -> str:
+    """Return real Library hours from embedded, officially verified details.
+
+    Do not confuse event timing (9 AM–6 PM workshops) with Library timings.
+    """
+    if "opening hours" not in detect_intents(question):
+        return ""
+    # Main-campus hours must not be substituted for UG/Jigani timings.
+    if re.search(r"\b(ug campus|jigani|undergraduate campus)\b", question.lower()):
+        return ""
+    verified = next((item for item in results if item.get("kind") == "opening_hours"), None)
+    if not verified:
+        return ""
+    q = question.lower()
+    if re.search(r"\b(transaction|circulation|counter|book issuing|issue desk)\b", q):
+        return ("The IIM Bangalore Library's **transaction/circulation hours** "
+                "are **9:15 AM to 10:00 PM**. The Library itself remains open "
+                "from **9:00 AM to 6:00 AM the following day**. The Library "
+                "is closed on Republic Day (26 January), Independence Day "
+                "(15 August) and Gandhi Jayanti (2 October).")
+    return ("The IIM Bangalore Library is open **9:00 AM to 6:00 AM the "
+            "following day**, on weekdays, weekends and holidays except "
+            "three national holidays.\n\n"
+            "**Transaction/circulation hours:** 9:15 AM to 10:00 PM.\n\n"
+            "**Closed on:** Republic Day (26 January), Independence Day "
+            "(15 August) and Gandhi Jayanti (2 October).")
 
 # Known Library pages: titles are short, user-friendly and unambiguous.
 # Match an intent before presenting one as a source link.
 OFFICIAL_PAGE_LABELS = {
     "/pa/wh": ("Library Open Hours", "opening hours"),
-    "/FRAL": ("IIMB Library Workshop Coordinators", "librarian identity"),
+    "/FRAL": ("Librarian (In-Charge) – Official IIMB Source", "librarian identity"),
     "/emd": ("External Membership", "membership"),
     "/pa/au": ("About Library", "about library"),
+    "/pa/lsd": ("Library Staff Directory", "staff directory"),
+    "/pa/cs": ("Contact Library Staff", "contact"),
 }
 
 
@@ -728,6 +974,13 @@ def response_links(question: str, results: list[dict]) -> list[tuple[str, str]]:
     """
     intents = set(detect_intents(question))
     question_lower = clean(question).lower()
+    # Don't return IIMB librarian links as evidence about other IIMs.
+    if "librarian identity" in intents and re.search(
+        r"\b(?:iim\s+(?:kozhikode|calcutta|ahmedabad|lucknow|indore|"
+        r"ranchi|udaipur|visakhapatnam)|iimk|iima|iimc|iiml|iimr|iimu)\b",
+        question_lower,
+    ):
+        intents.discard("librarian identity")
     about_request = bool(re.search(r"\b(about|overview|history|introduction)\b", question_lower))
     q_tokens = set(tokenize(question))
     expanded_tokens = set(tokenize(search_query(question)))
@@ -752,8 +1005,12 @@ def response_links(question: str, results: list[dict]) -> list[tuple[str, str]]:
         path = urlparse(url).path
         if path in OFFICIAL_PAGE_LABELS:
             _, page_intent = OFFICIAL_PAGE_LABELS[path]
-            is_match = (page_intent in intents if page_intent != "about library"
-                        else about_request and not intents)
+            if page_intent == "about library":
+                is_match = about_request and not intents
+            elif page_intent == "staff directory":
+                is_match = "directory" in question_lower or "staff list" in question_lower
+            else:
+                is_match = page_intent in intents
             if not is_match:
                 continue
             relevance = 100.0  # Explicit, intent-matched official page.
@@ -774,7 +1031,10 @@ def response_links(question: str, results: list[dict]) -> list[tuple[str, str]]:
             candidates[url] = (relevance, label)
 
     ranked = sorted(candidates.items(), key=lambda pair: pair[1][0], reverse=True)
-    return [(label, url) for url, (_, label) in ranked[:MAX_OFFICIAL_LINKS]]
+    # A single verified page answers opening-hours and leadership questions.
+    limit = (1 if len(intents.intersection({"opening hours", "librarian identity"})) == 1
+             else MAX_OFFICIAL_LINKS)
+    return [(label, url) for url, (_, label) in ranked[:limit]]
 
 
 def show_links(links: list[tuple[str, str]]) -> None:
@@ -810,7 +1070,14 @@ with st.sidebar:
     st.subheader("LibAI")
     st.caption("Answers are based on Library knowledge sources.")
     st.metric("Sources indexed", num_sources)
+    website_pages = len({item.get("url") for item in index.chunks
+                         if item.get("url", "").startswith(LIBRARY_HOME)
+                         and not item.get("kind")})
+    st.metric("Website pages indexed", website_pages)
     st.metric("Searchable sections", len(index.chunks))
+    if website_pages == 0:
+        st.warning("The public website could not be indexed. Only embedded/local "
+                   "knowledge is available; check source loading or retry Refresh.")
     st.caption("Model: " + str(get_setting("OLLAMA_MODEL", DEFAULT_MODEL)))
     if st.button("Refresh knowledge base", use_container_width=True):
         build_index.clear()
@@ -822,10 +1089,15 @@ with st.sidebar:
     # only when a librarian or administrator needs to inspect retrieval issues.
     debug_enabled = str(get_setting("LIBAI_DEBUG", "false")).lower() == "true"
     diagnostics = st.checkbox("Show retrieval diagnostics", value=False) if debug_enabled else False
-    if failures and debug_enabled:
-        with st.expander(f"Source-loading issues ({len(failures)})"):
-            for failure in failures[:30]:
-                st.write(failure)
+    if failures:
+        important_failures = [f for f in failures if "Crawl reached" in f or
+                              "Crawl stopped" in f]
+        if important_failures:
+            st.warning(important_failures[-1])
+        if debug_enabled:
+            with st.expander(f"Source-loading issues ({len(failures)})"):
+                for failure in failures[:30]:
+                    st.write(failure)
 
 if not index.chunks:
     st.warning("No Library knowledge was loaded. Check knowledge/ and knowledge/urls.txt.")
@@ -864,12 +1136,13 @@ if question and question.strip():
         else:
             with st.spinner("Preparing a detailed answer..."):
                 try:
-                    # Critical, regularly verified staff identity questions are
-                    # answered from the curated source without LLM uncertainty.
-                    answer = verified_librarian_answer(question, results)
+                    # Reliable answers for high-value verified facts do not
+                    # depend on model brevity, crawler success or extra files.
+                    leadership = verified_librarian_answer(question, results)
+                    hours = verified_hours_answer(question, results)
+                    answer = "\n\n".join(part for part in (leadership, hours) if part)
                     if not answer:
                         answer = call_ollama(question, context, previous)
-                        answer = verified_hours_fallback(question, results, answer)
                     links = response_links(retrieval_question, results)
                     st.markdown(answer)
                     show_links(links)
