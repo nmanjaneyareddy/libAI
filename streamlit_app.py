@@ -62,7 +62,7 @@ TOP_K = 9
 MAX_CONTEXT_CHARS = 18000
 MAX_HISTORY = 6
 REQUEST_TIMEOUT = 180
-SOURCE_TIMEOUT = 12
+SOURCE_TIMEOUT = 8
 MAX_OFFICIAL_LINKS = 2
 
 # IMPORTANT: These two official facts are embedded INSIDE this script so a new
@@ -221,6 +221,34 @@ def absolute_url(link: str, base: str) -> str:
     path = parsed.path.rstrip("/") or "/"
     return parsed._replace(netloc=parsed.hostname.lower(), path=path,
                            query=query, fragment="").geturl()
+
+
+
+def access_url(href: str, base: str) -> str:
+    """Preserve genuine access links found on official pages."""
+    href = unescape(str(href or "")).strip()
+
+    if not href or href.lower().startswith(
+        ("#", "mailto:", "tel:", "javascript:", "data:")
+    ):
+        return ""
+
+    url, _ = urldefrag(urljoin(base, href))
+    parsed = urlparse(url)
+
+    if parsed.scheme not in ("https", "http"):
+        return ""
+
+    if not parsed.hostname or parsed.username or parsed.password:
+        return ""
+
+    if parsed.hostname.lower() in {
+        "localhost", "127.0.0.1", "0.0.0.0"
+    }:
+        return ""
+
+    return url
+
 
 
 def download(url: str) -> tuple[bytes, str, str]:
@@ -446,10 +474,21 @@ def extract_html(payload: bytes, url: str) -> tuple[list[dict], list[str]]:
             or soup.body or soup)
     for tag in root.select("script, style, noscript, svg, form, iframe, nav, footer"):
         tag.decompose()
+    
     for anchor in root.find_all("a", href=True):
-        link = absolute_url(anchor.get("href", ""), url)
-        label = clean(anchor.get_text(" "))
-        anchor.replace_with(f"{label} ({link})" if link and label else label)
+        link = access_url(anchor.get("href", ""), url)
+    
+        label = clean(
+            anchor.get_text(" ")
+            or anchor.get("aria-label", "")
+            or anchor.get("title", "")
+        )
+    
+        if link and label:
+            anchor.replace_with(f"\n{label} ({link})\n")
+        else:
+            anchor.replace_with(label)
+
     content = normalize_lines(root.get_text("\n", strip=True))
     description = soup.find("meta", attrs={"name": "description"})
     desc = clean(description.get("content", "")) if description else ""
@@ -967,88 +1006,198 @@ def _short_source_title(source: str, url: str) -> str:
 
 
 
-def response_links(question: str, results: list[dict]) -> list[tuple[str, str]]:
-    """Return relevant official source links from retrieved content."""
 
-    intents = set(detect_intents(question))
-    question_terms = set(tokenize(question))
-    expanded_terms = set(tokenize(search_query(question)))
+def response_links(
+    question: str,
+    results: list[dict]
+) -> list[tuple[str, str]]:
+    """Select relevant source and access links from retrieved pages."""
 
     generic = {
-        "library", "libraries", "about", "home",
-        "information", "services", "service",
-        "resource", "resources", "iimb", "guide"
+        "library", "libraries", "information",
+        "service", "services", "resource", "resources",
+        "iimb", "guide", "page", "database", "databases"
     }
 
-    candidates = {}
+    terms = set(tokenize(question)) - generic
+    intents = set(detect_intents(question))
 
-    for item in results:
-        raw_url = clean(item.get("url", ""))
+    wants_access = bool(re.search(
+        r"\b(access|login|log in|sign in|register|registration|"
+        r"book|booking|download|open|website|link|handout|guide|use)\b",
+        question.lower()
+    ))
 
-        if not raw_url:
-            match = re.search(
-                r"(?im)^Official source:\s*(https?://[^\s<>)]+)",
-                str(item.get("text", ""))
-            )
-            raw_url = match.group(1) if match else ""
+    source_candidates = {}
+    access_candidates = {}
 
-        url = _official_url(raw_url)
+    for position, item in enumerate(results):
+        official = _official_url(item.get("url", ""))
 
-        if not url:
+        if not official:
             continue
 
-        label = _short_source_title(
-            str(item.get("source", "")), url
+        source_title = _short_source_title(
+            str(item.get("source", "")), official
         )
 
-        if not label:
-            continue
+        content = str(item.get("text", ""))
+        path = urlparse(official).path.rstrip("/") or "/"
 
-        path = urlparse(url).path.rstrip("/") or "/"
+        # 1. Identify relevant official source pages.
+        if source_title:
+            title_overlap = len(
+                terms & set(tokenize(source_title))
+            )
+            text_overlap = len(
+                terms & set(tokenize(content))
+            )
 
-        if path in OFFICIAL_PAGE_LABELS:
-            _, page_intent = OFFICIAL_PAGE_LABELS[path]
+            known = OFFICIAL_PAGE_LABELS.get(path)
 
-            if page_intent == "about library":
-                relevant = bool(
-                    re.search(
-                        r"\b(about|overview|history|introduction)\b",
+            compatible = (
+                not known
+                or known[1] in intents
+                or (
+                    known[1] == "about library"
+                    and bool(re.search(
+                        r"\b(about|overview|history)\b",
                         question.lower()
+                    ))
+                )
+                or (
+                    known[1] == "staff directory"
+                    and "staff" in question.lower()
+                )
+            )
+
+            if compatible and (
+                title_overlap
+                or (position <= 1 and text_overlap)
+            ):
+                score = (
+                    15 * title_overlap
+                    + (6 if position == 0 else 3 if position == 1 else 0)
+                    + (100 if known and known[1] in intents else 0)
+                )
+
+                previous = source_candidates.get(
+                    official, (-1, "")
+                )
+
+                if score > previous[0]:
+                    source_candidates[official] = (
+                        score, source_title
                     )
-                ) and not intents
-            else:
-                relevant = page_intent in intents
 
-            if not relevant:
+        # 2. Find genuine links embedded within the page content.
+        pattern = (
+            r"(?m)^\s*(?P<label>[^\n()]{2,110}?)\s*"
+            r"\((?P<url>https?://[^\s)]+)\)\s*$"
+        )
+
+        for match in re.finditer(pattern, content):
+            name = clean(
+                match.group("label")
+            ).strip(" -:|•")
+
+            url = access_url(
+                match.group("url"), official
+            )
+
+            if not url or url.rstrip("/") == official.rstrip("/"):
                 continue
 
-            score = 100.0
-
-        else:
-            title_terms = set(tokenize(label)) - generic
-            direct = len(question_terms & title_terms)
-            expanded = len(expanded_terms & title_terms)
-
-            if direct == 0 and expanded == 0:
+            if len(url) > 2048 or not name or len(name) > 90:
                 continue
 
-            score = direct * 10 + expanded * 3
+            if re.search(
+                r"^(a|b|c|home|next|previous|back|"
+                r"skip to content|image)$",
+                name,
+                re.I
+            ):
+                continue
 
-        score += min(float(item.get("score", 0)), 100) / 1000
+            direct = len(
+                terms & set(tokenize(name))
+            )
 
-        if url not in candidates or score > candidates[url][0]:
-            candidates[url] = (score, label)
+            # Check surrounding text to identify which resource
+            # an Access, Register or Booking link belongs to.
+            vicinity = content[
+                max(0, match.start() - 190):
+                min(len(content), match.end() + 60)
+            ]
 
-    ranked = sorted(
-        candidates.items(),
-        key=lambda x: x[1][0],
+            near = len(
+                terms & set(tokenize(vicinity))
+            )
+
+            action = bool(re.search(
+                r"\b(access|login|log in|register|registration|"
+                r"booking|book|download|open|website|handout|"
+                r"profile|full.?text|launch)\b",
+                name,
+                re.I
+            ))
+
+            if direct == 0 and not (
+                wants_access and near and action
+            ):
+                continue
+
+            if not direct and name.lower() in {
+                "image", "new image", "click here", "here"
+            }:
+                continue
+
+            score = (
+                direct * 20
+                + near * 3
+                + (8 if wants_access and action else 0)
+                + (4 if position == 0 else 0)
+            )
+
+            previous = access_candidates.get(
+                url, (-1, "")
+            )
+
+            if score > previous[0]:
+                access_candidates[url] = (
+                    score, name
+                )
+
+    # 3. Rank source pages and access links separately.
+    sources = sorted(
+        source_candidates.items(),
+        key=lambda row: row[1][0],
         reverse=True
     )
 
-    return [
-        (label, url)
-        for url, (_, label) in ranked[:MAX_OFFICIAL_LINKS]
-    ]
+    accesses = sorted(
+        access_candidates.items(),
+        key=lambda row: row[1][0],
+        reverse=True
+    )
+
+    output = []
+
+    # Include the best relevant source page.
+    if sources:
+        url, (_, name) = sources[0]
+        output.append((name, url))
+
+    # Include directly relevant access/supporting links.
+    for url, (_, name) in accesses:
+        if not any(existing_url == url for _, existing_url in output):
+            output.append((name, url))
+
+        if len(output) >= MAX_OFFICIAL_LINKS:
+            break
+
+    return output
+
 
 
 def show_links(links: list[tuple[str, str]]) -> None:
