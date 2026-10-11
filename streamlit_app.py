@@ -998,7 +998,7 @@ def call_ollama(question: str, context: str, history: list[dict],
     answer = keep_approved_links(answer, approved_links)
     answer = re.sub(r"[ \t]+", " ", answer).strip()
     if not answer:
-                            website_question = re.search(
+        website_question = re.search(
                         r"\b(library website|library webpage|library homepage|"
                         r"library url|library web address|"
                         r"website of (?:the )?(?:iimb )?library)\b",
@@ -1006,7 +1006,7 @@ def call_ollama(question: str, context: str, history: list[dict],
                         flags=re.IGNORECASE,
                     )
 
-                    if website_question or clean(question).lower() in {
+        if website_question or clean(question).lower() in {
                         "website", "website link", "library website address"
                     }:
                         answer = (
