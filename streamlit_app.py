@@ -1002,7 +1002,12 @@ def call_ollama(question: str, context: str, history: list[dict],
                         r"\b(library website|library webpage|library homepage|"
                         r"library url|library web address|"
                         r"website of (?:the )?(?:iimb )?library)\b",
-                        clean(question),
+                        re.sub(
+                            r"\bwebiste\b",
+                            "website",
+                            clean(question),
+                            flags=re.IGNORECASE,
+                        ),
                         flags=re.IGNORECASE,
                     )
 
