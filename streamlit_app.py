@@ -1021,7 +1021,11 @@ def _short_source_title(source: str, url: str) -> str:
     return label[:65]
 
 
-def response_links(question: str, results: list[dict]) -> list[tuple[str, str]]:
+def response_links(
+    question: str,
+    results: list[dict],
+    answer: str = ""
+) -> list[tuple[str, str]]:
     """Select a relevant official source page and access URLs captured there.
 
     Link destinations come from the indexed page, never from generated text.
