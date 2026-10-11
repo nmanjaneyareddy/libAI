@@ -1091,7 +1091,7 @@ def response_links(question: str, results: list[dict]) -> list[tuple[str, str]]:
         return []
     sources.sort(key=lambda entry: entry[0], reverse=True)
     _, selected, source_url, title = sources[0]
-    links = [(f"Source page: {title}", source_url)]
+    links = [(f"Source Link: {title}", source_url)]
     seen = {source_url}
     candidates = []
     for entry in selected.get("page_links", []):
@@ -1139,7 +1139,7 @@ def response_links(question: str, results: list[dict]) -> list[tuple[str, str]]:
             continue
         seen.add(url)
         is_external = urlparse(url).hostname not in ALLOWED_CRAWL_HOSTS
-        prefix = "Access" if is_external or re.search(
+        prefix = "Link" if is_external or re.search(
             r"\b(access|login|log in|launch|register|booking|book|enter|download)\b",
             label.lower(),
         ) else "Related page"
