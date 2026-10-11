@@ -966,76 +966,90 @@ def _short_source_title(source: str, url: str) -> str:
     return label[:65]
 
 
-def response_links(question: str, results: list[dict]) -> list[tuple[str, str]]:
-    """Only show official links that DIRECTLY correspond to the question.
 
-    Retrieval returns contextual documents, not necessarily relevant links.
-    Thus we deliberately do not show every URL from the highest-ranked chunks.
-    Return at most two. Zero links is better than unrelated links.
-    """
+def response_links(question: str, results: list[dict]) -> list[tuple[str, str]]:
+    """Return relevant official source links from retrieved content."""
+
     intents = set(detect_intents(question))
-    question_lower = clean(question).lower()
-    # Don't return IIMB librarian links as evidence about other IIMs.
-    if "librarian identity" in intents and re.search(
-        r"\b(?:iim\s+(?:kozhikode|calcutta|ahmedabad|lucknow|indore|"
-        r"ranchi|udaipur|visakhapatnam)|iimk|iima|iimc|iiml|iimr|iimu)\b",
-        question_lower,
-    ):
-        intents.discard("librarian identity")
-    about_request = bool(re.search(r"\b(about|overview|history|introduction)\b", question_lower))
-    q_tokens = set(tokenize(question))
-    expanded_tokens = set(tokenize(search_query(question)))
-    # A term like 'library' or 'service' alone is never enough evidence.
-    generic = {"library", "libraries", "about", "home", "information",
-               "services", "service", "resource", "resources", "iimb", "guide"}
-    candidates: dict[str, tuple[float, str]] = {}
+    question_terms = set(tokenize(question))
+    expanded_terms = set(tokenize(search_query(question)))
+
+    generic = {
+        "library", "libraries", "about", "home",
+        "information", "services", "service",
+        "resource", "resources", "iimb", "guide"
+    }
+
+    candidates = {}
 
     for item in results:
-        raw = clean(item.get("url", ""))
-        if not raw:
-            # Local FAQ: only extract a deliberately marked official source.
-            match = re.search(r"(?im)^Official source:\s*(https?://[^\s<>)]+)",
-                              str(item.get("text", "")))
-            raw = match.group(1) if match else ""
-        url = _official_url(raw)
+        raw_url = clean(item.get("url", ""))
+
+        if not raw_url:
+            match = re.search(
+                r"(?im)^Official source:\s*(https?://[^\s<>)]+)",
+                str(item.get("text", ""))
+            )
+            raw_url = match.group(1) if match else ""
+
+        url = _official_url(raw_url)
+
         if not url:
             continue
-        label = _short_source_title(str(item.get("source", "")), url)
+
+        label = _short_source_title(
+            str(item.get("source", "")), url
+        )
+
         if not label:
             continue
-        path = urlparse(url).path
+
+        path = urlparse(url).path.rstrip("/") or "/"
+
         if path in OFFICIAL_PAGE_LABELS:
             _, page_intent = OFFICIAL_PAGE_LABELS[path]
+
             if page_intent == "about library":
-                is_match = about_request and not intents
-            elif page_intent == "staff directory":
-                is_match = "directory" in question_lower or "staff list" in question_lower
+                relevant = bool(
+                    re.search(
+                        r"\b(about|overview|history|introduction)\b",
+                        question.lower()
+                    )
+                ) and not intents
             else:
-                is_match = page_intent in intents
-            if not is_match:
+                relevant = page_intent in intents
+
+            if not relevant:
                 continue
-            relevance = 100.0  # Explicit, intent-matched official page.
+
+            score = 100.0
+
         else:
             title_terms = set(tokenize(label)) - generic
-            direct_overlap = q_tokens.intersection(title_terms)
-            related_overlap = expanded_tokens.intersection(title_terms)
-            if not direct_overlap and not related_overlap:
-                continue
-            relevance = 5.0 * len(direct_overlap) + 2.0 * len(related_overlap)
-            # Avoid loosely related link titles if the question has a clear
-            # intent but no exact topic match with the page title.
-            if intents and not direct_overlap and len(related_overlap) < 2:
-                continue
-        relevance += min(float(item.get("score", 0)), 100.0) / 1000.0
-        previous = candidates.get(url)
-        if previous is None or relevance > previous[0]:
-            candidates[url] = (relevance, label)
+            direct = len(question_terms & title_terms)
+            expanded = len(expanded_terms & title_terms)
 
-    ranked = sorted(candidates.items(), key=lambda pair: pair[1][0], reverse=True)
-    # A single verified page answers opening-hours and leadership questions.
-    limit = (1 if len(intents.intersection({"opening hours", "librarian identity"})) == 1
-             else MAX_OFFICIAL_LINKS)
-    return [(label, url) for url, (_, label) in ranked[:limit]]
+            if direct == 0 and expanded == 0:
+                continue
+
+            score = direct * 10 + expanded * 3
+
+        score += min(float(item.get("score", 0)), 100) / 1000
+
+        if url not in candidates or score > candidates[url][0]:
+            candidates[url] = (score, label)
+
+    ranked = sorted(
+        candidates.items(),
+        key=lambda x: x[1][0],
+        reverse=True
+    )
+
+    return [
+        (label, url)
+        for url, (_, label) in ranked[:MAX_OFFICIAL_LINKS]
+    ]
+
 
 
 def show_links(links: list[tuple[str, str]]) -> None:
