@@ -101,6 +101,7 @@ VERIFIED_RECORDS = [
             "The Library is closed on Republic Day (26 January), "
             "Independence Day (15 August) and Gandhi Jayanti (2 October).\n"
             "Official source: https://library.iimb.ac.in/pa/wh"
+            "Library website: https://library.iimb.ac.in"
         ),
     },
 ]
