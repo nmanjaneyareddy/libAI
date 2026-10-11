@@ -1524,7 +1524,7 @@ def ask_ollama(
             "messages": messages,
             "stream": False,
             "options": {
-                "temperature": 0.0,
+                "temperature": 0.2,
             },
         },
         timeout=REQUEST_TIMEOUT_SECONDS,
