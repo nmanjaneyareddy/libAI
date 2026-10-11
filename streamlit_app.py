@@ -1051,17 +1051,15 @@ def response_links(question: str, results: list[dict]) -> list[tuple[str, str]]:
     ]
 
 
-
 def show_links(links: list[tuple[str, str]]) -> None:
     if not links:
         return
-    st.markdown("**Relevant links**" if len(links) == 1
-                else "**Relevant links**")
+
+    st.markdown("**Relevant links**")
+
     for title, url in links:
-        # Titles were generated from official source metadata, not the model.
         title = title.replace("[", "").replace("]", "")
         st.markdown(f"- [{title}]({url})")
-
 
 # --- Streamlit user interface ---
 logo = BASE_DIR / "assets" / "iimb-logo.svg"
