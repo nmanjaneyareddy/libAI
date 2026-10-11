@@ -1,5 +1,4 @@
 """LibAI v4: IIM Bangalore Library RAG assistant using Ollama Cloud.
-
 Uses verified local knowledge + crawled official pages, BM25 retrieval,
 source-backed answers, conversational follow-ups and optional diagnostics.
 Requires the existing repository's requirements.txt and assets/ directory.
@@ -264,7 +263,20 @@ def download(url: str) -> tuple[bytes, str, str]:
     raise ValueError("Too many redirects")
 
 
+def is_outdated_source(url: str) -> bool:
+    parsed = urlparse(url)
+    query = dict(parse_qsl(parsed.query))
+    return (
+        parsed.hostname == "library.iimb.ac.in"
+        and (
+            parsed.path.rstrip("/").lower() == "/iimb_library"
+            or query.get("g") == "743068"
+        )
+    )
+
 def is_crawlable(url: str, explicit_seeds: set[str]) -> bool:
+    if is_outdated_source(url):
+    return False
     parsed = urlparse(url)
     if parsed.scheme not in {"https", "http"} or not parsed.hostname:
         return False
@@ -507,6 +519,9 @@ def extract_html(payload: bytes, url: str) -> tuple[list[dict], list[str]]:
 
 def fetch_source(url: str) -> tuple[list[dict], list[str]]:
     payload, resolved, content_type = download(url)
+    if is_outdated_source(resolved):
+       return [], []
+    
     path = urlparse(resolved).path.lower()
     if path.endswith(".pdf") or "application/pdf" in content_type:
         return extract_pdf(payload, resolved, resolved), []
