@@ -35,7 +35,7 @@ VERSION = "4.0.2-LEADERSHIP"
 LIBRARY_HOME = "https://library.iimb.ac.in/"
 PRIORITY_URLS = [
     "https://library.iimb.ac.in/pa/wh",
-    "https://library.iimb.ac.in/FRAL",
+
 ]
 ALLOWED_CRAWL_HOSTS = {"library.iimb.ac.in"}
 SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".csv", ".txt", ".md"}
