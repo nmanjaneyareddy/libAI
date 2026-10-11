@@ -1011,6 +1011,14 @@ def response_links(question: str, results: list[dict]) -> list[tuple[str, str]]:
     Link destinations come from the indexed page, never from generated text.
     A missing or irrelevant source is not replaced with a guessed URL.
     """
+    # Do not display source links for greetings or acknowledgements.
+    if re.fullmatch(
+        r"(?:hi|hello|hey|good morning|good afternoon|good evening|"
+        r"thanks|thank you)[\s!.,?]*",
+        question.strip(),
+        flags=re.IGNORECASE,
+    ):
+        return []
     intents = set(detect_intents(question))
     q_lower = clean(question).lower()
     if "librarian identity" in intents and re.search(
