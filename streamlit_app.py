@@ -52,12 +52,12 @@ MAX_PDF_PAGES = 500
 # Covers main website pages and linked LibGuides subpages, rather than only
 # the first two navigation levels. These are safety/performance limits, not
 # a guarantee that access-controlled or JavaScript-only pages can be indexed.
-MAX_CRAWL_PAGES = 350
-MAX_CRAWL_DEPTH = 8
-MAX_CRAWL_SECONDS = 240
-MAX_CRAWL_WORKERS = 3
-MAX_QUEUED_URLS = 6000
-MAX_SITEMAP_URLS = 2500
+MAX_CRAWL_PAGES = 120
+MAX_CRAWL_DEPTH = 5
+MAX_CRAWL_SECONDS = 45
+MAX_CRAWL_WORKERS = 4
+MAX_QUEUED_URLS = 1500
+MAX_SITEMAP_URLS = 500
 TOP_K = 9
 MAX_CONTEXT_CHARS = 18000
 MAX_HISTORY = 6
