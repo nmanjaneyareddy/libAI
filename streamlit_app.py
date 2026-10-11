@@ -998,30 +998,8 @@ def call_ollama(question: str, context: str, history: list[dict],
     answer = keep_approved_links(answer, approved_links)
     answer = re.sub(r"[ \t]+", " ", answer).strip()
     if not answer:
-        website_question = re.search(
-                        r"\b(library website|library webpage|library homepage|"
-                        r"library url|library web address|"
-                        r"website of (?:the )?(?:iimb )?library)\b",
-                        re.sub(
-                            r"\bwebiste\b",
-                            "website",
-                            clean(question),
-                            flags=re.IGNORECASE,
-                        ),
-                        flags=re.IGNORECASE,
-                    )
-
-        if website_question or clean(question).lower() in {
-                        "website", "website link", "library website address"
-                    }:
-                        answer = (
-                            "You can visit the IIM Bangalore Library website here: "
-                            f"[IIMB Library Website](<{LIBRARY_WEBSITE}>)."
-                        )
         raise RuntimeError("Ollama returned an empty answer.")
     return answer
-
-
 
 def verified_librarian_answer(question: str, results: list[dict]) -> str:
     """Answer current IIMB librarian questions from verified embedded context.
@@ -1431,7 +1409,24 @@ if question and question.strip():
                 if results:
                     st.json([{"title": r["source"], "url": r.get("url", ""),
                               "score": r["score"], "preview": r["text"][:400]} for r in results])
-        if not results:
+        website_text = re.sub(
+            r"\bwebiste\b", "website", clean(question).lower()
+        )
+
+        website_question = bool(re.search(
+            r"\b(library(?:'s)?\s+(?:website|webpage|homepage|url|web address)|"
+            r"website of (?:the )?(?:iimb )?library)\b",
+            website_text,
+        )) or website_text in {"website", "website link", "website address"}
+
+        if website_question:
+            answer = (
+                "The IIM Bangalore Library website is: "
+                f"[IIMB Library Website](<{LIBRARY_WEBSITE}>)."
+            )
+            links = []
+            st.markdown(answer)
+        elif not results:
             answer, links = NOT_FOUND, []
             st.info(answer)
         else:
