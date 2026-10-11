@@ -276,7 +276,7 @@ def is_outdated_source(url: str) -> bool:
 
 def is_crawlable(url: str, explicit_seeds: set[str]) -> bool:
     if is_outdated_source(url):
-    return False
+        return False
     parsed = urlparse(url)
     if parsed.scheme not in {"https", "http"} or not parsed.hostname:
         return False
