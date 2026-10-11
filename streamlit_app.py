@@ -1041,8 +1041,8 @@ def response_links(question: str, results: list[dict]) -> list[tuple[str, str]]:
 def show_links(links: list[tuple[str, str]]) -> None:
     if not links:
         return
-    st.markdown("**Relevant official link**" if len(links) == 1
-                else "**Relevant official links**")
+    st.markdown("**Relevant links**" if len(links) == 1
+                else "**Relevant links**")
     for title, url in links:
         # Titles were generated from official source metadata, not the model.
         title = title.replace("[", "").replace("]", "")
