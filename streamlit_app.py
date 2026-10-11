@@ -34,7 +34,7 @@ KNOWLEDGE_DIR = BASE_DIR / "knowledge"
 URLS_FILE = KNOWLEDGE_DIR / "urls.txt"
 OLLAMA_URL = "https://ollama.com/api/chat"
 DEFAULT_MODEL = "gpt-oss:120b"
-VERSION = "4.2.0-DEEP-CRAWL"
+VERSION = "4.3.0-RELEVANT-LINKS"
 LIBRARY_HOME = "https://library.iimb.ac.in/"
 PRIORITY_URLS = [
     "https://library.iimb.ac.in/pa/wh",     # Current official Library hours
@@ -62,7 +62,7 @@ MAX_CONTEXT_CHARS = 18000
 MAX_HISTORY = 6
 REQUEST_TIMEOUT = 180
 SOURCE_TIMEOUT = 12
-MAX_OFFICIAL_LINKS = 2
+MAX_OFFICIAL_LINKS = 4
 
 # IMPORTANT: These two official facts are embedded INSIDE this script so a new
 # knowledge/*.md file is NOT needed. They were checked on 11 October 2026.
@@ -121,7 +121,7 @@ INTENTS = {
                       "weekend hours", "saturday", "sunday", "transaction hours",
                       "library hours", "opening times", "closing hours", "hours"],
     "remote access": ["off campus", "off-campus", "access from home", "myloft",
-                      "remotexs", "outside campus", "remote login"],
+                      "remotexs", "outside campus", "remote login", "remotely"],
     "borrowing": ["borrow", "book issue", "issue books", "book loan", "check out", "checkout"],
     "renewal": ["renew", "renew books", "extend loan", "due date"],
     "reservation": ["reserve", "hold", "book reservation", "place a hold"],
@@ -209,7 +209,7 @@ PAGE_QUERY_KEYS = {"g", "p", "page", "b", "group_id", "subject_id",
                    "type_id", "owner_id", "sort", "id"}
 
 
-def absolute_url(link: str, base: str) -> str:
+def absolute_url(link: str, base: str, preserve_query: bool = False) -> str:
     link = clean(link)
     if not link or link.lower().startswith(("#", "javascript:", "mailto:", "tel:", "data:")):
         return ""
@@ -219,10 +219,16 @@ def absolute_url(link: str, base: str) -> str:
         return ""
     if parsed.username or parsed.password:
         return ""
-    query = urlencode(sorted((key, value) for key, value in parse_qsl(
-        parsed.query, keep_blank_values=False) if key.lower() in PAGE_QUERY_KEYS))
-    path = parsed.path.rstrip("/") or "/"
-    return parsed._replace(netloc=parsed.hostname.lower(), path=path,
+    # Crawl URLs use canonical page identifiers. Access URLs must retain all
+    # parameters, including encoded targets in proxy/login/booking URLs.
+    if preserve_query or parsed.hostname.lower() not in ALLOWED_CRAWL_HOSTS:
+        query = parsed.query
+        path = parsed.path or "/"
+    else:
+        query = urlencode(sorted((key, value) for key, value in parse_qsl(
+            parsed.query, keep_blank_values=False) if key.lower() in PAGE_QUERY_KEYS))
+        path = parsed.path.rstrip("/") or "/"
+    return parsed._replace(netloc=parsed.netloc.lower(), path=path,
                            query=query, fragment="").geturl()
 
 
@@ -449,9 +455,38 @@ def extract_html(payload: bytes, url: str) -> tuple[list[dict], list[str]]:
             or soup.body or soup)
     for tag in root.select("script, style, noscript, svg, form, iframe, nav, footer"):
         tag.decompose()
+    page_links = []
+    seen_links = set()
+    replacements = []
+    # Capture context before replacing any anchors, so earlier URL text does
+    # not contaminate later links. Local paragraphs/rows identify databases
+    # even when the clickable label is simply "Access" or "Click here".
     for anchor in root.find_all("a", href=True):
-        link = absolute_url(anchor.get("href", ""), url)
-        label = clean(anchor.get_text(" "))
+        link = absolute_url(anchor.get("href", ""), url, preserve_query=True)
+        label = clean(anchor.get_text(" ") or anchor.get("aria-label", "")
+                      or anchor.get("title", ""))
+        if not label:
+            image = anchor.find("img")
+            label = clean(image.get("alt", "")) if image else ""
+        parent = anchor.find_parent(["tr", "li", "p"]) or anchor.parent
+        nearby = clean(parent.get_text(" "))[:500]
+        # Include the closest content-box heading, useful for a separate
+        # paragraph containing only an access button.
+        box = anchor.find_parent(class_="s-lib-box-content")
+        container = box.find_parent(class_="s-lib-box") if box else None
+        heading = container.find(class_="s-lib-box-title") if container else None
+        if heading is None and box:
+            heading = box.find(["h2", "h3", "h4"]) or box.find("a")
+        heading_text = clean(heading.get_text(" "))[:150] if heading else ""
+        context = clean(heading_text + " " + nearby)
+        # Shared registration URLs can occur under several database headings;
+        # retain each context, then deduplicate destinations when displaying.
+        signature = (label.lower(), link, context.lower())
+        if link and label and signature not in seen_links:
+            seen_links.add(signature)
+            page_links.append((label[:100], link, context))
+        replacements.append((anchor, label, link))
+    for anchor, label, link in replacements:
         anchor.replace_with(f"{label} ({link})" if link and label else label)
     content = normalize_lines(root.get_text("\n", strip=True))
     description = soup.find("meta", attrs={"name": "description"})
@@ -466,6 +501,7 @@ def extract_html(payload: bytes, url: str) -> tuple[list[dict], list[str]]:
     # otherwise BM25 might find a menu link instead of the answer.
     for chunk in chunks:
         chunk["text"] = f"Page: {title}\n{chunk['text']}"
+        chunk["page_links"] = page_links
     return chunks, discovered
 
 
@@ -952,7 +988,7 @@ def _official_url(url: str) -> str:
     if parsed.username or parsed.password:
         return ""
     path = parsed.path.rstrip("/") or "/"
-    return parsed._replace(path=path, query="", fragment="").geturl()
+    return parsed._replace(path=path, fragment="").geturl()
 
 
 def _short_source_title(source: str, url: str) -> str:
@@ -970,86 +1006,157 @@ def _short_source_title(source: str, url: str) -> str:
 
 
 def response_links(question: str, results: list[dict]) -> list[tuple[str, str]]:
-    """Only show official links that DIRECTLY correspond to the question.
+    """Select a relevant official source page and access URLs captured there.
 
-    Retrieval returns contextual documents, not necessarily relevant links.
-    Thus we deliberately do not show every URL from the highest-ranked chunks.
-    Return at most two. Zero links is better than unrelated links.
+    Link destinations come from the indexed page, never from generated text.
+    A missing or irrelevant source is not replaced with a guessed URL.
     """
     intents = set(detect_intents(question))
-    question_lower = clean(question).lower()
-    # Don't return IIMB librarian links as evidence about other IIMs.
+    q_lower = clean(question).lower()
     if "librarian identity" in intents and re.search(
         r"\b(?:iim\s+(?:kozhikode|calcutta|ahmedabad|lucknow|indore|"
         r"ranchi|udaipur|visakhapatnam)|iimk|iima|iimc|iiml|iimr|iimu)\b",
-        question_lower,
+        q_lower,
     ):
         intents.discard("librarian identity")
-    about_request = bool(re.search(r"\b(about|overview|history|introduction)\b", question_lower))
-    q_tokens = set(tokenize(question))
-    expanded_tokens = set(tokenize(search_query(question)))
-    # A term like 'library' or 'service' alone is never enough evidence.
-    generic = {"library", "libraries", "about", "home", "information",
-               "services", "service", "resource", "resources", "iimb", "guide"}
-    candidates: dict[str, tuple[float, str]] = {}
 
-    for item in results:
-        raw = clean(item.get("url", ""))
-        if not raw:
-            # Local FAQ: only extract a deliberately marked official source.
-            match = re.search(r"(?im)^Official source:\s*(https?://[^\s<>)]+)",
-                              str(item.get("text", "")))
-            raw = match.group(1) if match else ""
-        url = _official_url(raw)
-        if not url:
+    # Use the same tokenizer for exclusions as for query terms: it stems
+    # 'resources' to 'resource', 'access' to 'acces', etc.
+    generic = set(tokenize(
+        "library libraries iimb database databases resource resources information "
+        "access link links online login website page official direct use get "
+        "open launch visit register booking book download available want need "
+        "find know provide explain service services guide home about"
+    ))
+    focus = set(tokenize(question)) - generic
+    if "remote access" in intents:
+        focus.update(tokenize("remote MyLOFT RemoteXs"))
+    expanded = set(tokenize(search_query(question))) - generic
+    about_request = bool(re.search(r"\b(about|overview|history|introduction)\b", q_lower))
+    sources = []
+    for position, item in enumerate(results):
+        kind = item.get("kind", "")
+        if kind == "leadership" and "librarian identity" not in intents:
             continue
-        label = _short_source_title(str(item.get("source", "")), url)
-        if not label:
+        if kind == "opening_hours" and "opening hours" not in intents:
             continue
-        path = urlparse(url).path
-        if path in OFFICIAL_PAGE_LABELS:
-            _, page_intent = OFFICIAL_PAGE_LABELS[path]
+        raw_url = clean(item.get("url", ""))
+        if not raw_url:
+            match = re.search(
+                r"(?im)^Official source:\s*(https?://[^\s<>)]+)",
+                str(item.get("text", "")),
+            )
+            raw_url = match.group(1) if match else ""
+        source_url = _official_url(raw_url)
+        if not source_url:
+            continue
+        path = urlparse(source_url).path
+        title = _short_source_title(str(item.get("source", "")), source_url)
+        title = title or "Official Library information"
+        page_info = OFFICIAL_PAGE_LABELS.get(path)
+        matched_intent = False
+        if page_info:
+            page_intent = page_info[1]
             if page_intent == "about library":
-                is_match = about_request and not intents
+                matched_intent = about_request and not intents
             elif page_intent == "staff directory":
-                is_match = "directory" in question_lower or "staff list" in question_lower
+                matched_intent = "directory" in q_lower or "staff list" in q_lower
             else:
-                is_match = page_intent in intents
-            if not is_match:
+                matched_intent = page_intent in intents
+            if not matched_intent:
                 continue
-            relevance = 100.0  # Explicit, intent-matched official page.
-        else:
-            title_terms = set(tokenize(label)) - generic
-            direct_overlap = q_tokens.intersection(title_terms)
-            related_overlap = expanded_tokens.intersection(title_terms)
-            if not direct_overlap and not related_overlap:
+        title_terms = set(tokenize(title + " " + path)) - generic
+        content_terms = set(tokenize(str(item.get("text", "")))) - generic
+        # Names such as Prowess may appear in the content of a category page
+        # whose title is only 'Company / Industry Information'.
+        link_terms = set()
+        for entry in item.get("page_links", []):
+            if len(entry) == 3:
+                label, destination, context = entry
+                link_terms.update(tokenize(str(label) + " " + str(context)
+                                           + " " + str(destination)))
+        topic_match = bool(focus & (title_terms | content_terms | link_terms))
+        related_title = expanded & title_terms
+        if not (matched_intent or topic_match or related_title):
+            continue
+        score = (10 * len(focus & title_terms)
+                 + 2 * len(focus & content_terms)
+                 + 3 * len(focus & link_terms)
+                 + 2 * len(related_title)
+                 + (40 if matched_intent else 0)
+                 + min(float(item.get("score", 0)), 100) / 20
+                 - position * 0.2)
+        sources.append((score, item, source_url, title))
+    if not sources:
+        return []
+    sources.sort(key=lambda entry: entry[0], reverse=True)
+    _, selected, source_url, title = sources[0]
+    links = [(f"Source page: {title}", source_url)]
+    seen = {source_url}
+    candidates = []
+    for entry in selected.get("page_links", []):
+        if len(entry) != 3:
+            continue
+        label, raw_url, context = map(str, entry)
+        url = absolute_url(raw_url, source_url, preserve_query=True)
+        if not url or url in seen:
+            continue
+        parsed = urlparse(url)
+        label_lower = label.lower()
+        if re.search(r"\b(handout|profile|copyright|privacy|terms)\b", label_lower) and not re.search(
+            r"\b(handout|profile|copyright|privacy|terms)\b", q_lower
+        ):
+            continue
+        label_terms = set(tokenize(label)) - generic
+        url_terms = set(tokenize((parsed.hostname or "") + " " + parsed.path)) - generic
+        context_terms = set(tokenize(context)) - generic
+        label_match = len(focus & label_terms)
+        url_match = len(focus & url_terms)
+        context_match = len(focus & context_terms)
+        access_action = bool(re.search(
+            r"\b(access|login|log in|open|launch|visit|register|booking|book|"
+            r"enter|click here|download)\b", label_lower
+        ))
+        # Generic access buttons are useful when their nearby text names the
+        # requested resource. This also applies to 'Tell me about Prowess'.
+        if not (label_match or url_match or (access_action and context_match)):
+            continue
+        relevance = label_match * 12 + url_match * 8 + context_match * 2
+        relevance += 3 if access_action else 0
+        direct_count = len(focus & (label_terms | url_terms))
+        candidates.append((relevance, label, url, direct_count, context_match))
+    candidates.sort(key=lambda entry: entry[0], reverse=True)
+    strongest_direct = max((entry[3] for entry in candidates), default=0)
+    for _, label, url, direct_count, context_match in candidates:
+        # If the question names a brand AND a product, do not show other
+        # products merely because their links share that brand name.
+        if strongest_direct > 1:
+            if direct_count and direct_count < strongest_direct:
                 continue
-            relevance = 5.0 * len(direct_overlap) + 2.0 * len(related_overlap)
-            # Avoid loosely related link titles if the question has a clear
-            # intent but no exact topic match with the page title.
-            if intents and not direct_overlap and len(related_overlap) < 2:
+            if not direct_count and context_match < strongest_direct:
                 continue
-        relevance += min(float(item.get("score", 0)), 100.0) / 1000.0
-        previous = candidates.get(url)
-        if previous is None or relevance > previous[0]:
-            candidates[url] = (relevance, label)
-
-    ranked = sorted(candidates.items(), key=lambda pair: pair[1][0], reverse=True)
-    # A single verified page answers opening-hours and leadership questions.
-    limit = (1 if len(intents.intersection({"opening hours", "librarian identity"})) == 1
-             else MAX_OFFICIAL_LINKS)
-    return [(label, url) for url, (_, label) in ranked[:limit]]
+        if url in seen:
+            continue
+        seen.add(url)
+        is_external = urlparse(url).hostname not in ALLOWED_CRAWL_HOSTS
+        prefix = "Access" if is_external or re.search(
+            r"\b(access|login|log in|launch|register|booking|book|enter|download)\b",
+            label.lower(),
+        ) else "Related page"
+        links.append((f"{prefix}: {label}", url))
+        if len(links) >= MAX_OFFICIAL_LINKS:
+            break
+    return links
 
 
 def show_links(links: list[tuple[str, str]]) -> None:
     if not links:
         return
-    st.markdown("**Relevant links**" if len(links) == 1
-                else "**Relevant links**")
+    st.markdown("**Relevant links**")
     for title, url in links:
         # Titles were generated from official source metadata, not the model.
         title = title.replace("[", "").replace("]", "")
-        st.markdown(f"- [{title}]({url})")
+        st.markdown(f"- [{title}](<{url}>)")
 
 
 # --- Streamlit user interface ---
@@ -1061,7 +1168,7 @@ with left:
     else:
         st.markdown("📚")
 with right:
-    st.title("Library AI Assistant")
+    st.title("LibAI Assistant")
 st.caption("Hi! 👋 Welcome to IIMB Library. I’m here to help you with library resources and services. How can I assist you today?")
 
 if "messages" not in st.session_state:
@@ -1071,7 +1178,7 @@ with st.spinner("Loading Library knowledge sources..."):
     index, failures, num_sources = build_index()
 
 with st.sidebar:
-    st.subheader("Library AI")
+    st.subheader("LibAI")
     st.caption("Answers are based on Library knowledge sources.")
     st.metric("Sources indexed", num_sources)
     website_pages = len({item.get("url") for item in index.chunks
