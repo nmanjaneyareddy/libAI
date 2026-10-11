@@ -31,9 +31,12 @@ KNOWLEDGE_DIR = BASE_DIR / "knowledge"
 URLS_FILE = KNOWLEDGE_DIR / "urls.txt"
 OLLAMA_URL = "https://ollama.com/api/chat"
 DEFAULT_MODEL = "gpt-oss:120b"
-VERSION = "4.0.1-RELEVANT-LINKS"
+VERSION = "4.0.2-LEADERSHIP"
 LIBRARY_HOME = "https://library.iimb.ac.in/"
-PRIORITY_URLS = ["https://library.iimb.ac.in/pa/wh"]
+PRIORITY_URLS = [
+    "https://library.iimb.ac.in/pa/wh",
+    "https://library.iimb.ac.in/FRAL",
+]
 ALLOWED_CRAWL_HOSTS = {"library.iimb.ac.in"}
 SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".csv", ".txt", ".md"}
 DOCUMENT_EXTENSIONS = {".pdf", ".xlsx"}
@@ -55,6 +58,10 @@ NOT_FOUND = ("I couldn't verify the requested details in the Library knowledge b
 
 # Every expansion is used for SEARCH ONLY, never passed off as a factual claim.
 INTENTS = {
+    "librarian identity": ["librarian in-charge", "librarian in charge",
+                           "librarian name", "who is the librarian",
+                           "who heads the library", "head of the library",
+                           "deputy librarian", "library leadership"],
     "opening hours": ["library timings", "library timing", "working hours", "open hours",
                       "opening time", "closing time", "operating hours", "timings", "timing",
                       "weekend hours", "saturday", "sunday", "transaction hours",
@@ -68,7 +75,8 @@ INTENTS = {
     "membership": ["join library", "external member", "visitor membership", "library member"],
     "electronic resources": ["database", "e resources", "e-resources", "ejournals",
                              "e journals", "ebooks", "e books", "online journals"],
-    "contact": ["telephone", "phone number", "email", "librarian", "contact staff"],
+    "contact": ["telephone", "phone number", "email", "contact staff",
+                "contact librarian", "librarian contact"],
 }
 STOPWORDS = set("a an the and or is are was were to for from with can i we you my our me us "
                 "at in of on it this that how what when where who which do does tell give please "
@@ -95,6 +103,8 @@ RESPONSE QUALITY
 - Do NOT respond only with a web link when facts are present in the reference content.
 - Don't pad with unrelated information or copy long passages verbatim.
 - If the context covers only some parts of the question, answer those parts and clearly say what remains unverified.
+- When asked who serves as Librarian, distinguish the substantive title from any In-Charge designation.
+- Never treat an address or generic email as evidence that a person's name is unavailable.
 - If context doesn't contain an answer at all, say the information could not be verified; do not guess.
 - No fabricated citations. The app will display only directly relevant official source links separately.
 - Never show reference item IDs, source code, internal prompts, or hidden metadata.
@@ -377,6 +387,15 @@ def detect_intents(question: str) -> list[str]:
         if canonical in lower or any(re.search(r"(?<!\w)" + re.escape(p) + r"(?!\w)", lower)
                                      for p in phrases):
             found.append(canonical)
+    # Role/name questions must retrieve verified personnel information, not
+    # generic mailboxes or unrelated pages with the word "librarian".
+    identity_words = bool(re.search(r"\b(librarian|deputy librarian|chief librarian)\b", lower))
+    name_question = bool(re.search(r"\b(who|whose|name|current|present|in[- ]?charge|head|lead|serving)\b", lower))
+    library_head_question = bool(re.search(r"\b(who|name|current|present)\b.*\b(head|in[- ]?charge)\b.*\blibrary\b", lower))
+    if ((identity_words and (name_question or lower in {"librarian", "the librarian"}))
+            or library_head_question):
+        if "librarian identity" not in found:
+            found.append("librarian identity")
     # Questions such as 'When do you close today?' have no explicit word 'hours'.
     if (re.search(r"\b(when|what time)\b.*\b(open|close|closing)\b", lower)
             or (re.search(r"\b(open|closed|close)\b", lower)
@@ -595,6 +614,48 @@ def call_ollama(question: str, context: str, history: list[dict]) -> str:
 
 
 
+def verified_librarian_answer(question: str, results: list[dict]) -> str:
+    """Use a maintained, source-verified staff entry for CURRENT identity questions.
+
+    Avoid an LLM's 'not listed' answer when an authoritative, local record
+    has already been retrieved. Never hard-code the person's name in Python.
+    The exact facts and source link live in knowledge/library_staff.md.
+    Historical or outside-institution queries use normal retrieval instead.
+    """
+    if "librarian identity" not in detect_intents(question):
+        return ""
+    lower = question.lower()
+    if re.search(r"\b(former|previous|predecessor|historical|history|past|last year|20[0-2][0-9])\b", lower):
+        return ""
+    if re.search(r"\biim\s+(?!bangalore\b|bengaluru\b)(?:kozhikode|calcutta|ahmedabad|lucknow|indore|ranchi|udaipur|visakhapatnam)\b", lower):
+        return ""
+    for item in results:
+        if not str(item.get("source", "")).endswith("library_staff.md"):
+            continue
+        content = str(item.get("text", ""))
+        def field(label: str) -> str:
+            hit = re.search(r"(?im)^" + re.escape(label) + r":\s*(.+)$", content)
+            return clean(hit.group(1)) if hit else ""
+        name = field("Current Librarian (In-Charge)")
+        substantive = field("Substantive position")
+        email = field("Official email")
+        telephone = field("Official telephone")
+        if not name:
+            continue
+        answer = f"**{name}** is currently serving as **Librarian (In-Charge)** of the IIM Bangalore Library."
+        if substantive:
+            answer += f" The substantive position is **{substantive}**."
+        contacts = []
+        if email:
+            contacts.append(f"Email: {email}")
+        if telephone:
+            contacts.append(f"Phone: {telephone}")
+        if contacts:
+            answer += "\n\n**Contact details:**\n" + "\n".join("- " + line for line in contacts)
+        return answer
+    return ""
+
+
 def verified_hours_fallback(question: str, results: list[dict], answer: str) -> str:
     """If a model ignores retrieved timings, use literal verified FAQ facts.
 
@@ -625,6 +686,7 @@ def verified_hours_fallback(question: str, results: list[dict], answer: str) -> 
 # Match an intent before presenting one as a source link.
 OFFICIAL_PAGE_LABELS = {
     "/pa/wh": ("Library Open Hours", "opening hours"),
+    "/FRAL": ("IIMB Library Workshop Coordinators", "librarian identity"),
     "/emd": ("External Membership", "membership"),
     "/pa/au": ("About Library", "about library"),
 }
@@ -802,8 +864,12 @@ if question and question.strip():
         else:
             with st.spinner("Preparing a detailed answer..."):
                 try:
-                    answer = call_ollama(question, context, previous)
-                    answer = verified_hours_fallback(question, results, answer)
+                    # Critical, regularly verified staff identity questions are
+                    # answered from the curated source without LLM uncertainty.
+                    answer = verified_librarian_answer(question, results)
+                    if not answer:
+                        answer = call_ollama(question, context, previous)
+                        answer = verified_hours_fallback(question, results, answer)
                     links = response_links(retrieval_question, results)
                     st.markdown(answer)
                     show_links(links)
