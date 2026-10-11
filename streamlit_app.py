@@ -35,6 +35,7 @@ OLLAMA_URL = "https://ollama.com/api/chat"
 DEFAULT_MODEL = "gpt-oss:120b"
 VERSION = "4.5.0-LINKS-IN-ANSWERS"
 LIBRARY_HOME = "https://library.iimb.ac.in/"
+LIBRARY_WEBSITE = "https://library.iimb.ac.in/library"
 PRIORITY_URLS = [
     "https://library.iimb.ac.in/pa/wh",     # Current official Library hours
     "https://library.iimb.ac.in/pa/lsd",    # Staff directory
@@ -997,6 +998,21 @@ def call_ollama(question: str, context: str, history: list[dict],
     answer = keep_approved_links(answer, approved_links)
     answer = re.sub(r"[ \t]+", " ", answer).strip()
     if not answer:
+                            website_question = re.search(
+                        r"\b(library website|library webpage|library homepage|"
+                        r"library url|library web address|"
+                        r"website of (?:the )?(?:iimb )?library)\b",
+                        clean(question),
+                        flags=re.IGNORECASE,
+                    )
+
+                    if website_question or clean(question).lower() in {
+                        "website", "website link", "library website address"
+                    }:
+                        answer = (
+                            "You can visit the IIM Bangalore Library website here: "
+                            f"[IIMB Library Website](<{LIBRARY_WEBSITE}>)."
+                        )
         raise RuntimeError("Ollama returned an empty answer.")
     return answer
 
