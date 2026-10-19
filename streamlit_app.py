@@ -914,7 +914,28 @@ def keep_approved_links(answer: str, links: list[tuple[str, str]]) -> str:
     for index, link in enumerate(protected):
         answer = answer.replace(f"\uE000LIBAI_LINK_{index}\uE001", link)
     return answer.strip()
-    
+
+def append_relevant_links(answer: str, links: list[tuple[str, str]]) -> str:
+    """Include captured links in the response and its stored chat content."""
+    existing = set()
+    for match in re.finditer(
+        r"\[[^\]\n]+\]\(\s*(?:<([^<>\n]+)>|([^\s)]+))\s*\)", answer
+    ):
+        existing.add(absolute_url(match.group(1) or match.group(2), LIBRARY_HOME,
+                                  preserve_query=True))
+    lines = []
+    for label, url in links:
+        canonical = absolute_url(url, LIBRARY_HOME, preserve_query=True)
+        if not canonical or canonical in existing:
+            continue
+        existing.add(canonical)
+        label = clean(label).replace("[", "").replace("]", "").replace("`", "")
+        lines.append(f"- [{label}](<{url}>)")
+    if not lines:
+        return answer.strip()
+    return answer.rstrip() + "\n\n**Relevant links**\n\n" + "\n".join(lines) 
+
+
 def get_setting(name: str, default=""):
     try:
         return st.secrets.get(name, default)
