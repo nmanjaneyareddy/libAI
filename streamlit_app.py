@@ -137,7 +137,7 @@ STOPWORDS = set("a an the and or is are was were to for from with can i we you m
                 "at in of on it this that how what when where who which do does tell give please "
                 "information about library iimb details".split())
 
-SYSTEM_PROMPT = f"""You are LibAI, the IIM Bangalore Library Reference Assistant.
+SYSTEM_PROMPT = """You are LibAI, the IIM Bangalore Library Reference Assistant.
 Your job is to ANSWER the question, not merely direct the user to a webpage.
 
 GROUNDING AND SAFETY
