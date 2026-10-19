@@ -167,7 +167,7 @@ RESPONSE QUALITY
     <relevant_links>
     - [Clear descriptive label](exact URL from the context)
     </relevant_links>
-- Include no more than two links. A link is relevant only when it directly answers the question or lets the user access the requested service, resource, document, or page.
+- Include no more than three links. A link is relevant only when it directly answers the question or lets the user access the requested service, resource, document, or page.
 - Never invent, modify, shorten, guess, or complete a URL.
 - For a follow-up question, answer the follow-up itself rather than repeating the entire previous answer unless repetition is necessary for clarity.
 - If APPROVED LINKS is empty, answer without links. Do not leave empty link
