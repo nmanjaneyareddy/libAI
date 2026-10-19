@@ -163,9 +163,13 @@ RESPONSE QUALITY
 - Never treat an address or generic email as evidence that a person's name is unavailable.
 - For precise named-person questions, prefer the verified leadership record to incidental
   names appearing on workshop agendas or unrelated institution pages.
-- Include clickable Markdown links for the services used in your answer when
-  the supplied APPROVED LINKS list contains the relevant destination.
-- Copy URLs exactly from APPROVED LINKS. Never invent or modify a destination.
+- If the context contains a URL that directly helps the user complete the requested task, append this machine-readable block:
+    <relevant_links>
+    - [Clear descriptive label](exact URL from the context)
+    </relevant_links>
+
+- Include no more than three links. A link is relevant only when it directly answers the question or lets the user access the requested service, resource, document, or page.
+- Never invent, modify, shorten, guess, or complete a URL.
 - If APPROVED LINKS is empty, answer without links. Do not leave empty link
   placeholders or dangling backticks. The app adds any remaining relevant links.
 - If context doesn't contain an answer at all, say the information could not be verified; do not guess.
