@@ -1451,9 +1451,9 @@ if question and question.strip():
                     if not answer:
                         approved_links = response_links(retrieval_question, results)
                         answer = call_ollama(question, context, previous, approved_links)
-                    links = response_links(retrieval_question, results, answer)
-                    answer = append_relevant_links(answer, links)
-                    st.markdown(answer)
+                        links = []
+                        st.markdown(answer)
+
                 except RuntimeError as exc:
                     answer, links = str(exc), []
                     st.error(answer)
