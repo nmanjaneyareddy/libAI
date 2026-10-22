@@ -1410,6 +1410,7 @@ if question and question.strip():
         st.markdown(question)
     with st.chat_message("assistant"):
         st.markdown("**AI Assistant**")
+        links = []
         retrieval_question, results = retrieve(index, question, previous)
         context = context_for_model(results)
         if diagnostics:
