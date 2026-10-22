@@ -901,16 +901,17 @@ def keep_approved_links(answer: str, links: list[tuple[str, str]]) -> str:
 
     # Turn code-wrapped URLs into ordinary links, then validate Markdown,
     # autolinks and bare URLs. Protect accepted links before stripping others.
-    answer = re.sub(r"`(https?://[^`\n]+)`", r"\1", answer)
-    answer = re.sub(
-        r"\[([^\]\n]+)\]\(\s*(?:<([^<>\n]+)>|([^\s)]+))\s*\)",
-        lambda match: protect(match.group(1), match.group(2) or match.group(3)),
-        answer,
-    )
-    answer = re.sub(
-        r"<(https?://[^<>\s]+)>",
-        lambda match: protect("", match.group(1)), answer,
-    )
+    # Convert HTML line breaks into Markdown-compatible line breaks
+    answer = re.sub(r"(?i)<br\s*/?>", "\n", answer)
+    
+    # Handle escaped HTML line breaks
+    answer = re.sub(r"(?i)&lt;br\s*/?&gt;", "\n", answer)
+    
+    # Remove excess blank lines
+    answer = re.sub(r"\n{3,}", "\n\n", answer)
+    
+    # Normalize spaces without removing line breaks
+    answer = re.sub(r"[ \t]+", " ", answer).strip()
 
     def bare_link(match) -> str:
         raw = match.group(0)
