@@ -32,7 +32,7 @@ BASE_DIR = Path(__file__).resolve().parent
 KNOWLEDGE_DIR = BASE_DIR / "knowledge"
 URLS_FILE = KNOWLEDGE_DIR / "urls.txt"
 OLLAMA_URL = "https://ollama.com/api/chat"
-DEFAULT_MODEL = "gpt-oss:20b-cloud"
+DEFAULT_MODEL = "gpt-oss:120b"
 VERSION = "4.5.0-LINKS-IN-ANSWERS"
 LIBRARY_HOME = "https://library.iimb.ac.in/"
 LIBRARY_WEBSITE = "https://library.iimb.ac.in/library"
@@ -977,9 +977,9 @@ def call_ollama(question: str, context: str, history: list[dict],
         "stream": False,
         "options": {"temperature": 0.2, "num_predict": 1400},
     }
-    # The existing deployed model is gpt-oss:20b-cloud; other models may differ.
-    # A conservative reasoning level is optional for gpt-oss:20b-cloud Cloud models.
-    if model.startswith("gpt-oss:20b-cloud"):
+    # The existing deployed model is gpt-oss:120b; other models may differ.
+    # A conservative reasoning level is optional for GPT-OSS Cloud models.
+    if model.startswith("gpt-oss"):
         payload["think"] = "low"
     try:
         response = requests.post(OLLAMA_URL,
@@ -991,32 +991,13 @@ def call_ollama(question: str, context: str, history: list[dict],
     except requests.RequestException as exc:
         raise RuntimeError("Could not connect to Ollama Cloud.") from exc
     if response.status_code == 401:
-        raise RuntimeError(
-            "Ollama authentication failed. Please check your API key."
-        )
-
-    if response.status_code == 402:
-        raise RuntimeError(
-            "Ollama Cloud access is restricted for this account or model. "
-            "The free plan may not include this model, or credits may "
-            "be required. Please check your Ollama account."
-        )
-    
+        raise RuntimeError("Ollama authentication failed. Review the API key.")
     if response.status_code == 404:
-        raise RuntimeError(
-            f"The Ollama model '{model}' is unavailable."
-        )
-    
+        raise RuntimeError(f"The Ollama model '{model}' is unavailable.")
     if response.status_code == 429:
-        raise RuntimeError(
-            "Ollama Cloud usage or rate limit reached. "
-            "Please try again later."
-        )
-    
+        raise RuntimeError("Ollama Cloud request/usage limit was reached.")
     if not response.ok:
-        raise RuntimeError(
-            f"Ollama API error (HTTP {response.status_code})."
-        )
+        raise RuntimeError(f"Ollama API error (HTTP {response.status_code}).")
     try:
         data = response.json()
         answer = data.get("message", {}).get("content", "")
