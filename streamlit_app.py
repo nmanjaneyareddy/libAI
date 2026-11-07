@@ -32,7 +32,7 @@ BASE_DIR = Path(__file__).resolve().parent
 KNOWLEDGE_DIR = BASE_DIR / "knowledge"
 URLS_FILE = KNOWLEDGE_DIR / "urls.txt"
 OLLAMA_URL = "https://ollama.com/api/chat"
-DEFAULT_MODEL = "gemma4"
+DEFAULT_MODEL = "gpt-oss:20b-cloud"
 VERSION = "4.5.0-LINKS-IN-ANSWERS"
 LIBRARY_HOME = "https://library.iimb.ac.in/"
 LIBRARY_WEBSITE = "https://library.iimb.ac.in/library"
@@ -977,9 +977,9 @@ def call_ollama(question: str, context: str, history: list[dict],
         "stream": False,
         "options": {"temperature": 0.2, "num_predict": 1400},
     }
-    # The existing deployed model is gemma4; other models may differ.
-    # A conservative reasoning level is optional for gemma4 Cloud models.
-    if model.startswith("gemma4"):
+    # The existing deployed model is gpt-oss:20b-cloud; other models may differ.
+    # A conservative reasoning level is optional for gpt-oss:20b-cloud Cloud models.
+    if model.startswith("gpt-oss:20b-cloud"):
         payload["think"] = "low"
     try:
         response = requests.post(OLLAMA_URL,
