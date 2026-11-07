@@ -991,13 +991,32 @@ def call_ollama(question: str, context: str, history: list[dict],
     except requests.RequestException as exc:
         raise RuntimeError("Could not connect to Ollama Cloud.") from exc
     if response.status_code == 401:
-        raise RuntimeError("Ollama authentication failed. Review the API key.")
+    raise RuntimeError(
+        "Ollama authentication failed. Please check your API key."
+    )
+
+    if response.status_code == 402:
+        raise RuntimeError(
+            "Ollama Cloud access is restricted for this account or model. "
+            "The free plan may not include this model, or credits may "
+            "be required. Please check your Ollama account."
+        )
+    
     if response.status_code == 404:
-        raise RuntimeError(f"The Ollama model '{model}' is unavailable.")
+        raise RuntimeError(
+            f"The Ollama model '{model}' is unavailable."
+        )
+    
     if response.status_code == 429:
-        raise RuntimeError("Ollama Cloud request/usage limit was reached.")
+        raise RuntimeError(
+            "Ollama Cloud usage or rate limit reached. "
+            "Please try again later."
+        )
+    
     if not response.ok:
-        raise RuntimeError(f"Ollama API error (HTTP {response.status_code}).")
+        raise RuntimeError(
+            f"Ollama API error (HTTP {response.status_code})."
+        )
     try:
         data = response.json()
         answer = data.get("message", {}).get("content", "")
