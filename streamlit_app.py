@@ -991,9 +991,9 @@ def call_ollama(question: str, context: str, history: list[dict],
     except requests.RequestException as exc:
         raise RuntimeError("Could not connect to Ollama Cloud.") from exc
     if response.status_code == 401:
-    raise RuntimeError(
-        "Ollama authentication failed. Please check your API key."
-    )
+        raise RuntimeError(
+            "Ollama authentication failed. Please check your API key."
+        )
 
     if response.status_code == 402:
         raise RuntimeError(
